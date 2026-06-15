@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
+  <!-- Teal Background -->
+  <rect width="100" height="100" rx="22" fill="#4cb0cc"/>
+
+  <!-- Tilted White Rounded Square / Diamond -->
+  <g transform="translate(50, 50) rotate(38) translate(-50, -50)">
+    <rect x="22" y="22" width="56" height="56" rx="18" fill="white"/>
+  </g>
+
+  <!-- Checkmark shape cutting through -->
+  <path d="M38 52 L48 62 L75 30" stroke="#4cb0cc" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
