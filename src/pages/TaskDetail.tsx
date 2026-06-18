@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ArrowLeft, DollarSign, Calendar, Users, X, Plus, CheckCircle2, Circle, Loader2, Building, Folder, Clock, ChevronUp, ChevronDown } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -14,6 +14,42 @@ function formatDateMMDDYY(dateStr: string) {
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return dateStr;
   return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+}
+
+function formatToMMDDYYYY(dateStr: string): string {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return dateStr;
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const year = d.getFullYear();
+  return `${month}/${day}/${year}`;
+}
+
+function getDuration(assignDateStr: string, completeDateStr: string): string {
+  if (!assignDateStr || !completeDateStr) return '';
+  const start = new Date(assignDateStr);
+  const end = new Date(completeDateStr);
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) return '';
+
+  const diffTime = end.getTime() - start.getTime();
+  const totalDays = Math.max(0, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
+
+  let months = end.getMonth() - start.getMonth() + (12 * (end.getFullYear() - start.getFullYear()));
+  let days = end.getDate() - start.getDate();
+
+  if (days < 0) {
+    months--;
+    const prevMonth = new Date(end.getFullYear(), end.getMonth(), 0);
+    days += prevMonth.getDate();
+  }
+
+  if (months < 0) {
+    months = 0;
+    days = totalDays;
+  }
+
+  return `(dur : ${days} day,${months} month)`;
 }
 
 function getDueDaysLeft(dueDateStr: string): { label: string, days: number, isOverdue: boolean } {
@@ -39,6 +75,48 @@ export function TaskDetail() {
   const [isLoading, setIsLoading] = useState(true);
   const [task, setTask] = useState<any>(null);
   const [expandActivities, setExpandActivities] = useState(true);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [completingSubTaskId, setCompletingSubTaskId] = useState<string | null>(null);
+  const [isSendingReport, setIsSendingReport] = useState(false);
+  const [isSettingDone, setIsSettingDone] = useState(false);
+  const [isSavingSubtask, setIsSavingSubtask] = useState(false);
+  const [users, setUsers] = useState<{ email: string, name: string, photo: string, id?: string }[]>([]);
+  const [showUserDropdown, setShowUserDropdown] = useState(false);
+  
+  const [showAddSubtaskModal, setShowAddSubtaskModal] = useState(false);
+  const [newSubtaskForm, setNewSubtaskForm] = useState({
+    id: '',
+    name: '',
+    instruction: '',
+    task: '',
+    unit: '',
+    amount: '',
+    assignDate: '',
+    dueDate: '',
+    user: '',
+    status: '',
+    completeDate: ''
+  });
+
+  const handleOpenAddSubtask = () => {
+    const randomId = Math.floor(Math.random() * 9000) + 1000;
+    const nextId = `ST-${randomId}`;
+
+    setNewSubtaskForm({
+      id: nextId,
+      name: '',
+      instruction: '',
+      task: task?.id || '',
+      unit: task?.project?.unit?.id || '',
+      amount: '',
+      assignDate: new Date().toISOString().split('T')[0],
+      dueDate: '',
+      user: localStorage.getItem('mtask_user_email') || task?.assignedTo?.email || '',
+      status: 'ToDo',
+      completeDate: ''
+    });
+    setShowAddSubtaskModal(true);
+  };
 
   useEffect(() => {
     async function fetchData() {
@@ -55,24 +133,33 @@ export function TaskDetail() {
         ]);
         const subRes = subRes2?.values ? subRes2 : subRes1;
 
-        const userMap = new Map<string, { photo: string, name: string }>();
+        const userMap = new Map<string, { photo: string, name: string, id: string }>();
+        const usersList: { email: string, name: string, photo: string, id: string }[] = [];
         if (userRes?.values?.length > 0) {
           const headers = userRes.values[0] as string[];
           const emailIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'EMAIL');
           const photoIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'PHOTO' || h?.trim().toUpperCase() === 'AVATAR');
           const nameIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'NAME');
+          const idIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'ID' || h?.trim().toUpperCase() === 'USER ID');
           if (emailIdx > -1) {
             userRes.values.slice(1).forEach((row: any[]) => {
               const email = row[emailIdx]?.trim();
               if (email) {
-                userMap.set(email, {
+                const userId = idIdx > -1 && row[idIdx] ? String(row[idIdx]).trim() : '';
+                const userInfo = {
                   photo: (photoIdx > -1 && row[photoIdx]) ? row[photoIdx] : `https://ui-avatars.com/api/?name=${encodeURIComponent(row[nameIdx] || email)}&background=eff6ff&color=3b82f6`,
                   name: (nameIdx > -1 && row[nameIdx]) ? row[nameIdx] : email.split('@')[0],
-                });
+                  id: userId
+                };
+                userMap.set(email, userInfo);
+                if (userId.toUpperCase() !== 'XXX') {
+                  usersList.push({ email, ...userInfo });
+                }
               }
             });
           }
         }
+        setUsers(usersList);
 
         const projectMap = new Map<string, any>();
         let unitMap = new Map<string, any>();
@@ -89,6 +176,7 @@ export function TaskDetail() {
               const uId = row[idIdx]?.trim();
               if (uId) {
                 unitMap.set(uId, {
+                  id: uId,
                   name: row[nameIdx]?.trim() || 'Unknown',
                   logo: (logoIdx > -1 && row[logoIdx]) ? row[logoIdx].trim() : 'https://images.unsplash.com/photo-1556761175-4b46a572b786?auto=format&fit=crop&w=100&q=80',
                   type: typeIdx > -1 ? (row[typeIdx] || '') : ''
@@ -112,11 +200,12 @@ export function TaskDetail() {
                const pId = row[idIdx]?.trim();
                if (pId) {
                  const uId = possibleUnitIdx > -1 ? row[possibleUnitIdx]?.trim() : '';
-                 let uInfo = { name: uId || 'Unknown', logo: 'https://images.unsplash.com/photo-1556761175-4b46a572b786?auto=format&fit=crop&w=100&q=80', type: ''};
+                 let uInfo = { id: uId, name: uId || 'Unknown', logo: 'https://images.unsplash.com/photo-1556761175-4b46a572b786?auto=format&fit=crop&w=100&q=80', type: ''};
                  if (unitMap.has(uId)) {
                    uInfo = unitMap.get(uId);
                  }
                  projectMap.set(pId, {
+                   id: pId,
                    name: nameIdx > -1 ? row[nameIdx] : pId,
                    unit: uInfo
                  });
@@ -185,15 +274,18 @@ export function TaskDetail() {
           const projIdIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'PROJECT ID' || h?.trim().toUpperCase() === 'PROJECT');
           const dueIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'TASK DUE DATE' || h?.trim().toUpperCase() === 'DUE DATE');
           const userIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'USER');
+          const assignIdx = headers.findIndex((h: string) => h?.trim().toUpperCase() === 'TASK ASSIGN DATE' || h?.trim().toUpperCase() === 'ASSIGN DATE' || h?.trim().toUpperCase() === 'DATE ASSIGN' || h?.trim().toUpperCase() === 'TASK_ASSIGN_DATE');
+          const completeIdx = headers.findIndex((h: string) => h?.trim().toUpperCase() === 'TASK COMPLETE DATE' || h?.trim().toUpperCase() === 'COMPLETE DATE' || h?.trim().toUpperCase() === 'TASK COMPLETE_DATE' || h?.trim().toUpperCase() === 'TASK COMPLETE DATE');
           
           if (taskIdIdx > -1) {
             const row = taskRes.values.slice(1).find((r: any[]) => r[taskIdIdx]?.trim() === id);
             if (row) {
               const pId = projIdIdx > -1 ? row[projIdIdx]?.trim() : '';
-              const projInfo = projectMap.get(pId) || { name: pId || 'Unknown Project', unit: { name: 'Unknown Unit', logo: 'https://images.unsplash.com/photo-1556761175-4b46a572b786?auto=format&fit=crop&w=100&q=80' } };
+              const projInfo = projectMap.get(pId) || { id: pId, name: pId || 'Unknown Project', unit: { id: '', name: 'Unknown Unit', logo: 'https://images.unsplash.com/photo-1556761175-4b46a572b786?auto=format&fit=crop&w=100&q=80' } };
               
               const userEmail = userIdx > -1 ? row[userIdx]?.trim() : '';
-              const userInfo = userMap.get(userEmail) || { name: userEmail || 'Unknown User', photo: `https://ui-avatars.com/api/?name=${encodeURIComponent(userEmail || 'U')}&background=eff6ff&color=3b82f6` };
+              const userInfoFromMap = userMap.get(userEmail);
+              const userInfo = userInfoFromMap ? { ...userInfoFromMap, email: userEmail } : { email: userEmail, name: userEmail || 'Unknown User', photo: `https://ui-avatars.com/api/?name=${encodeURIComponent(userEmail || 'U')}&background=eff6ff&color=3b82f6` };
 
               setTask({
                 id,
@@ -207,7 +299,9 @@ export function TaskDetail() {
                 totalSubtasks,
                 completedSubtasks,
                 expenses: totalExpenses,
-                activities: subtaskList
+                activities: subtaskList,
+                assignDate: (assignIdx > -1 && row[assignIdx]) ? String(row[assignIdx]).trim() : '',
+                completeDate: (completeIdx > -1 && row[completeIdx]) ? String(row[completeIdx]).trim() : ''
               });
             }
           }
@@ -220,6 +314,150 @@ export function TaskDetail() {
     }
     fetchData();
   }, [id]);
+
+  const handleSaveSubtask = async () => {
+    if (!newSubtaskForm.name || !newSubtaskForm.user || !newSubtaskForm.dueDate) {
+      setToastMessage('Harap lengkapi SubTask Name, User, dan Due Date');
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
+
+    try {
+      setIsSavingSubtask(true);
+      await fetch('https://script.google.com/macros/s/AKfycbytmdIdahbQ4y354eHa7m0F84bmKo9AxEYFHXATG8uIeRYQZB11b-GO7v4Tr43Ysi-P8w/exec', {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: {
+          'Content-Type': 'text/plain',
+        },
+        body: JSON.stringify({
+          action: "ADD_SUBTASK",
+          subtaskName: newSubtaskForm.name,
+          subtaskInstruction: newSubtaskForm.instruction,
+          taskId: newSubtaskForm.task,
+          unit: newSubtaskForm.unit,
+          amount: newSubtaskForm.amount,
+          subtaskDueDate: newSubtaskForm.dueDate,
+          userEmail: newSubtaskForm.user
+        })
+      });
+      
+      const userObj = users.find(u => u.email === newSubtaskForm.user) || { email: newSubtaskForm.user, name: newSubtaskForm.user, photo: `https://ui-avatars.com/api/?name=${encodeURIComponent(newSubtaskForm.user)}&background=eff6ff&color=3b82f6` };
+      
+      const newActivity = {
+        id: newSubtaskForm.id, // Generate local temporary ID or use the one generated earlier.
+        title: newSubtaskForm.name,
+        instruction: newSubtaskForm.instruction,
+        status: newSubtaskForm.status,
+        user: userObj,
+        expense: parseInt(newSubtaskForm.amount) || 0,
+        dueDate: newSubtaskForm.dueDate
+      };
+      
+      if (task) {
+        setTask({
+          ...task,
+          totalSubtasks: task.totalSubtasks + 1,
+          completedSubtasks: newSubtaskForm.status === 'Done' ? task.completedSubtasks + 1 : task.completedSubtasks,
+          activities: [...task.activities, newActivity]
+        });
+      }
+
+      setToastMessage('Subtask berhasil ditambahkan!');
+      setTimeout(() => setToastMessage(null), 3000);
+      setShowAddSubtaskModal(false);
+    } catch (error: any) {
+      alert('Gagal menyimpan SubTask: ' + error.message);
+    } finally {
+      setIsSavingSubtask(false);
+    }
+  };
+
+  const handleSubTaskDone = async (e: React.MouseEvent, subTaskId: string) => {
+    e.stopPropagation();
+    try {
+      setCompletingSubTaskId(subTaskId);
+      const payload = {
+        action: "UPDATE_STATUS_DONE",
+        sub_task_id: subTaskId
+      };
+
+      await fetch('https://script.google.com/macros/s/AKfycbxSGA6ad3nKy7Gfh_vrWuf4kP7xIBvzOIc9BTSqeJ9-eM8QxQRbmuUED0PEU3oDSz_R7A/exec', {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify(payload)
+      });
+
+      setToastMessage('Status Berhasil Diperbarui ke Done');
+      setTimeout(() => setToastMessage(null), 3000);
+
+      // Update local state
+      if (task) {
+        const updatedActivities = task.activities.map((act: any) => 
+          act.id === subTaskId ? { ...act, status: 'Done' } : act
+        );
+        const newCompleted = updatedActivities.filter((act: any) => 
+          act.status === 'Done' || act.status === 'Selesai' || act.status === 'Complete'
+        ).length;
+        setTask({ ...task, activities: updatedActivities, completedSubtasks: newCompleted });
+      }
+    } catch (err: any) {
+      alert('Gagal menyelesaikan activity: ' + err.message);
+    } finally {
+      setCompletingSubTaskId(null);
+    }
+  };
+
+  const handleSendReport = async () => {
+    if (!id || !task) return;
+    try {
+      setIsSendingReport(true);
+      await fetch('https://script.google.com/macros/s/AKfycbx-j6lV34wC8i7Xc23NA2xNT6orsaXyWoarCVWl_WE4LYOAdpuq-CZY5d5HiXELAU5qjA/exec', {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: {
+          'Content-Type': 'text/plain',
+        },
+        body: JSON.stringify({
+          action: 'TASK_SEND_REPORT',
+          task_id: id
+        })
+      });
+      setTask({ ...task, status: 'Review' });
+      setToastMessage('Laporan tugas berhasil dikirim untuk di-review');
+      setTimeout(() => setToastMessage(null), 3000);
+    } catch (error: any) {
+      alert('Gagal memperbarui status: ' + error.message);
+    } finally {
+      setIsSendingReport(false);
+    }
+  };
+
+  const handleTaskDone = async () => {
+    if (!id || !task) return;
+    try {
+      setIsSettingDone(true);
+      await fetch('https://script.google.com/macros/s/AKfycbx-j6lV34wC8i7Xc23NA2xNT6orsaXyWoarCVWl_WE4LYOAdpuq-CZY5d5HiXELAU5qjA/exec', {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: {
+          'Content-Type': 'text/plain',
+        },
+        body: JSON.stringify({
+          action: 'TASK_MARK_DONE',
+          task_id: id
+        })
+      });
+      setTask({ ...task, status: 'Done' });
+      setToastMessage('Tugas berhasil diselesaikan!');
+      setTimeout(() => setToastMessage(null), 3000);
+    } catch (error: any) {
+      alert('Gagal menyelesaikan task: ' + error.message);
+    } finally {
+      setIsSettingDone(false);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -331,9 +569,29 @@ export function TaskDetail() {
                <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Due Date</p>
              </div>
              <p className="text-sm font-bold text-gray-900 mb-1">{formatDateMMDDYY(task.dueDate)}</p>
-             <div className={cn("text-xs font-semibold inline-block px-2 py-0.5 rounded", dueInfo.isOverdue ? "bg-red-50 text-red-600" : "bg-green-50 text-green-600")}>
-               {dueInfo.days} {dueInfo.label}
-             </div>
+             {(() => {
+               const isTaskDone = (task.status || '').trim().toUpperCase() === 'DONE' || (task.status || '').trim().toUpperCase() === 'COMPLETE' || (task.status || '').trim().toUpperCase() === 'SELESAI';
+               if (isTaskDone) {
+                 return (
+                   <div className="flex flex-col">
+                     <span className="text-xs font-semibold px-2 py-0.5 rounded bg-emerald-50 text-emerald-600 inline-block w-fit">
+                       Done @ {formatToMMDDYYYY(task.completeDate)}
+                     </span>
+                     {task.assignDate && task.completeDate ? (
+                       <span className="text-[10px] text-gray-500 mt-1 block font-mono">
+                         {getDuration(task.assignDate, task.completeDate)}
+                       </span>
+                     ) : null}
+                   </div>
+                 );
+               } else {
+                 return (
+                   <div className={cn("text-xs font-semibold inline-block px-2 py-0.5 rounded", dueInfo.isOverdue ? "bg-red-50 text-red-600" : "bg-green-50 text-green-600")}>
+                     {dueInfo.days} {dueInfo.label}
+                   </div>
+                 );
+               }
+             })()}
           </div>
           <div className="flex flex-col items-center justify-center pl-4 relative">
              <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider w-full text-center absolute top-0 left-4 right-0">Progress</p>
@@ -400,11 +658,19 @@ export function TaskDetail() {
                         onClick={() => navigate(`/activities/${act.id}`)}
                       >
                         <div className="flex items-center gap-3">
-                          {act.status === 'Done' ? (
-                            <CheckCircle2 className="w-5 h-5 text-green-500 shrink-0" />
-                          ) : (
-                            <Circle className="w-5 h-5 text-gray-300 shrink-0" />
-                          )}
+                          <button 
+                            className="p-1 rounded-full hover:bg-gray-100 transition-colors shrink-0 disabled:opacity-50"
+                            onClick={(e) => act.status !== 'Done' ? handleSubTaskDone(e, act.id) : e.stopPropagation()}
+                            disabled={completingSubTaskId === act.id}
+                          >
+                            {completingSubTaskId === act.id ? (
+                              <Loader2 className="w-5 h-5 text-gray-400 animate-spin" />
+                            ) : act.status === 'Done' ? (
+                              <CheckCircle2 className="w-5 h-5 text-green-500" />
+                            ) : (
+                              <Circle className="w-5 h-5 text-gray-300" />
+                            )}
+                          </button>
                           <div className="flex-1 min-w-0">
                             <p className={cn("text-sm font-medium truncate", act.status === 'Done' ? "text-gray-500 line-through" : "text-gray-900")}>
                               {act.title}
@@ -429,24 +695,183 @@ export function TaskDetail() {
         </div>
 
         {/* Action Buttons */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 flex items-center gap-3">
-          <button className="flex-1 px-4 py-3 text-sm font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-xl transition-all text-center shadow-sm border border-blue-100">
-            Send Report
-          </button>
-          <button className="flex-1 px-4 py-3 text-sm font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-xl transition-all text-center shadow-sm border border-emerald-100">
-            Done
-          </button>
-        </div>
+        {!(task?.status?.toUpperCase() === 'DONE' || task?.status?.toUpperCase() === 'COMPLETE' || task?.status?.toUpperCase() === 'SELESAI') && (
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 flex items-center gap-3">
+            {task?.status !== 'Review' && (
+              <button 
+                onClick={handleSendReport}
+                disabled={isSendingReport}
+                className="flex-1 px-4 py-3 text-sm font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-xl transition-all text-center shadow-sm border border-blue-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {isSendingReport ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                Send Report
+              </button>
+            )}
+            {task?.status === 'Review' && (
+              <button 
+                onClick={handleTaskDone}
+                disabled={isSettingDone}
+                className="flex-1 px-4 py-3 text-sm font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-xl transition-all text-center shadow-sm border border-emerald-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {isSettingDone ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                Done
+              </button>
+            )}
+          </div>
+        )}
 
       </div>
 
       {/* FAB Add Activity */}
       <button 
         className="fixed bottom-24 right-5 w-14 h-14 bg-blue-600 hover:bg-blue-700 active:scale-95 transition-all text-white rounded-2xl flex items-center justify-center shadow-lg shadow-blue-600/30 border border-blue-500 z-40 group"
-        onClick={() => {}}
+        onClick={handleOpenAddSubtask}
       >
         <Plus className="w-7 h-7 group-hover:rotate-90 transition-transform duration-300" strokeWidth={2.5} />
       </button>
+
+      {/* Add Subtask Modal */}
+      <AnimatePresence>
+        {showAddSubtaskModal && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-gray-900/50 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="bg-white w-full max-w-lg rounded-2xl shadow-xl flex flex-col max-h-[90vh]"
+            >
+              <div className="p-4 border-b flex items-center justify-between shrink-0">
+                <h3 className="text-lg font-bold text-gray-900">Add Activity</h3>
+                <button onClick={() => setShowAddSubtaskModal(false)} className="p-1 hover:bg-gray-100 rounded-full text-gray-400 hover:text-gray-600 transition-colors">
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+              
+              <div className="p-4 overflow-y-auto flex-1 space-y-4">
+                {/* Managed fields hidden from UI: id, task, unit, assignDate, status, completeDate */}
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 mb-1">Activity Name</label>
+                  <input type="text" value={newSubtaskForm.name} onChange={e => setNewSubtaskForm({...newSubtaskForm, name: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm" placeholder="Enter Activity Name" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 mb-1">Description</label>
+                  <textarea value={newSubtaskForm.instruction} onChange={e => setNewSubtaskForm({...newSubtaskForm, instruction: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm min-h-[80px]" placeholder="Enter description..." />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-500 mb-1">Amount</label>
+                    <input type="number" value={newSubtaskForm.amount} onChange={e => setNewSubtaskForm({...newSubtaskForm, amount: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm" placeholder="Amount (e.g. 50000)" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-500 mb-1">Due Date</label>
+                    <input type="date" value={newSubtaskForm.dueDate} onChange={e => setNewSubtaskForm({...newSubtaskForm, dueDate: e.target.value})} className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm" />
+                  </div>
+                </div>
+                <div className="relative">
+                  <label className="block text-xs font-semibold text-gray-500 mb-1">User</label>
+                  <button
+                    type="button"
+                    onClick={() => !isSavingSubtask && setShowUserDropdown(!showUserDropdown)}
+                    disabled={isSavingSubtask}
+                    className="w-full flex items-center justify-between px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 bg-white outline-none text-sm text-left focus:border-blue-500 disabled:opacity-50 cursor-pointer"
+                  >
+                    {newSubtaskForm.user ? (
+                      (() => {
+                        const selectedUser = users.find(u => u.email === newSubtaskForm.user);
+                        const avatarUrl = selectedUser?.photo || `https://ui-avatars.com/api/?name=${encodeURIComponent(selectedUser?.name || newSubtaskForm.user)}&background=eff6ff&color=3b82f6`;
+                        return (
+                          <div className="flex items-center gap-2">
+                            <img src={avatarUrl} alt="user avatar" className="w-6 h-6 rounded-full object-cover border border-gray-200" referrerPolicy="no-referrer" />
+                            <span className="font-semibold text-gray-900">{selectedUser?.name || newSubtaskForm.user}</span>
+                          </div>
+                        );
+                      })()
+                    ) : (
+                      <span className="text-gray-400">Select User...</span>
+                    )}
+                    <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />
+                  </button>
+                  
+                  <AnimatePresence>
+                    {showUserDropdown && (
+                      <>
+                        <div className="fixed inset-0 z-10" onClick={() => setShowUserDropdown(false)} />
+                        <motion.div
+                          initial={{ opacity: 0, y: -5 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -5 }}
+                          className="absolute left-0 right-0 bottom-full mb-1 max-h-48 bg-white border border-gray-200 rounded-lg shadow-xl overflow-y-auto z-20 divide-y divide-gray-50"
+                        >
+                          {users.map((u) => {
+                            const avatarUrl = u.photo || `https://ui-avatars.com/api/?name=${encodeURIComponent(u.name || u.email)}&background=eff6ff&color=3b82f6`;
+                            return (
+                              <button
+                                key={u.email}
+                                type="button"
+                                onClick={() => {
+                                  setNewSubtaskForm({ ...newSubtaskForm, user: u.email });
+                                  setShowUserDropdown(false);
+                                }}
+                                className="w-full text-left px-3 py-2 flex items-center gap-2.5 transition-colors focus:outline-none hover:bg-gray-50"
+                              >
+                                <img src={avatarUrl} alt={u.name} className="w-7 h-7 rounded-full object-cover border border-gray-200 shrink-0" referrerPolicy="no-referrer" />
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-xs font-bold text-gray-900 truncate leading-tight">{u.name}</p>
+                                  <p className="text-[10px] text-gray-400 truncate mt-0.5">{u.email}</p>
+                                </div>
+                              </button>
+                            );
+                          })}
+                          {users.length === 0 && (
+                            <div className="p-3 text-center text-xs text-gray-400">No users found</div>
+                          )}
+                        </motion.div>
+                      </>
+                    )}
+                  </AnimatePresence>
+                </div>
+              </div>
+              
+              <div className="p-4 border-t flex gap-3 shrink-0">
+                <button 
+                  onClick={() => setShowAddSubtaskModal(false)}
+                  className="flex-1 px-4 py-2 font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-xl transition-all"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={handleSaveSubtask}
+                  disabled={isSavingSubtask}
+                  className="flex-1 px-4 py-2 font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed rounded-xl transition-all shadow-sm flex items-center justify-center gap-2"
+                >
+                  {isSavingSubtask ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    'Save'
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Toast Notification */}
+      <AnimatePresence>
+        {toastMessage && (
+          <motion.div 
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] bg-gray-800 text-white px-6 py-3 rounded-xl shadow-lg font-medium text-sm whitespace-nowrap"
+          >
+            {toastMessage}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
     </div>
   );

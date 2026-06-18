@@ -1,4 +1,5 @@
 import { getAccessToken } from './firebase';
+import appletConfig from '../../firebase-applet-config.json';
 
 const SPREADSHEET_ID = '1UB6-zV6go7IQsA6NA9oe-l7w-P6m-vgjJnmXt00vsao';
 const DRIVE_FOLDER_ID = '1_JsXFbHDqsoLO1Mxse1kLiptmtcHCiOF';
@@ -6,8 +7,12 @@ const DRIVE_FOLDER_ID = '1_JsXFbHDqsoLO1Mxse1kLiptmtcHCiOF';
 // Read data from sheets
 export async function getSheetData(range: string) {
   const token = await getAccessToken();
-  if (!token) throw new Error('Not authenticated');
-  if (token === 'mock-token') throw new Error('Mock authentication used, bypassing Sheets API');
+  if (!token) {
+    throw new Error('Not authenticated with valid Auth Token');
+  }
+  if (token === 'mock-token') {
+    return getSheetDataAnonymously(range);
+  }
 
   const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${range}`, {
     headers: { Authorization: `Bearer ${token}` }
@@ -62,7 +67,92 @@ export async function updateSheetData(range: string, values: any[][]) {
   return res.json();
 }
 
-// Export other functions only
+// Read data from sheets anonymously using API Key (for public sheets)
+export async function getSheetDataAnonymously(range: string) {
+  const apiKey = appletConfig.apiKey;
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${range}?key=${apiKey}`);
+  
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to fetch sheet data anonymously: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
+// Read data from custom Spreadsheet ID
+export async function getSheetDataFromId(spreadsheetId: string, range: string) {
+  const token = await getAccessToken();
+  if (!token || token === 'mock-token') {
+    return getSheetDataAnonymouslyFromId(spreadsheetId, range);
+  }
+
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to fetch sheet data: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
+// Update data in custom Spreadsheet ID
+export async function updateSheetDataFromId(spreadsheetId: string, range: string, values: any[][]) {
+  const token = await getAccessToken();
+  if (!token) throw new Error('Not authenticated with valid Auth Token');
+
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}?valueInputOption=USER_ENTERED`, {
+    method: 'PUT',
+    headers: { 
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ values })
+  });
+  
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to update sheet data: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
+// Read data from custom Spreadsheet ID anonymously using API Key (for public sheets)
+export async function getSheetDataAnonymouslyFromId(spreadsheetId: string, range: string) {
+  const apiKey = appletConfig.apiKey;
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}?key=${apiKey}`);
+  
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to fetch sheet data anonymously: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
+// Get Spreadsheet Metadata to avoid bruteforcing sheet names
+export async function getSpreadsheetMetadata(spreadsheetId: string) {
+  const token = await getAccessToken();
+  if (!token || token === 'mock-token') {
+    const apiKey = appletConfig.apiKey;
+    const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?key=${apiKey}&fields=sheets.properties.title`);
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Failed to fetch spreadsheet metadata anonymously: ${res.status} ${text}`);
+    }
+    return res.json();
+  }
+
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to fetch spreadsheet metadata: ${res.status} ${text}`);
+  }
+  return res.json();
+}
 
 // Fetch Calendar Events
 export async function getCalendarEvents(timeMin: string, timeMax: string) {

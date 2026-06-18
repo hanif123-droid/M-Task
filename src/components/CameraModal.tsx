@@ -57,7 +57,7 @@ export function CameraModal({
   };
 
   return (
-    <div className="fixed inset-0 z-[100] bg-black flex flex-col">
+    <div className="fixed inset-0 z-[150] bg-black flex flex-col">
       <div className="flex justify-between items-center p-4 text-white bg-gradient-to-b from-black/50 to-transparent absolute top-0 w-full z-10">
         <button onClick={onClose} className="p-2 bg-black/50 rounded-full cursor-pointer hover:bg-black/70">
           <X className="w-6 h-6" />

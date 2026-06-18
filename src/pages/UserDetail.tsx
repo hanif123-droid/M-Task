@@ -194,6 +194,26 @@ export function UserDetail({ userEmail, isProfile }: { userEmail?: string, isPro
             }
           });
         }
+
+        if (!foundUser && decodedEmail) {
+          foundUser = {
+            email: decodedEmail,
+            name: decodedEmail.split('@')[0],
+            fullName: decodedEmail.split('@')[0].toUpperCase(),
+            ktaId: 'USER-TEMP',
+            photo: '',
+            poin: 0,
+            unitId: '',
+            phone: '-',
+            alamat: '-',
+            joinDate: new Date().toLocaleDateString('id-ID'),
+            mapUrl: '',
+            avail: true,
+            rowIndex: -1,
+            availColIndex: -1
+          };
+        }
+
         setUserData(foundUser);
         if (foundUser) {
            setShowSilhouette(!foundUser.avail);
@@ -600,7 +620,7 @@ export function UserDetail({ userEmail, isProfile }: { userEmail?: string, isPro
              
              {tasks.length > 0 ? (
                <div className="w-full h-[180px] relative">
-                  <ResponsiveContainer width="100%" height="100%">
+                  <ResponsiveContainer width="100%" height={180}>
                     <PieChart>
                       <Pie
                         data={pieData}

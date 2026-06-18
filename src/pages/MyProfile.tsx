@@ -15,10 +15,14 @@ export function MyProfile() {
       const unsubscribe = auth.onAuthStateChanged(user => {
          if (user?.email) {
            setEmail(user.email);
-         } else if (localStorage.getItem('mtask_auth_bypass') === 'true') {
-           setEmail('suryasukmana.co.id@gmail.com');
          } else {
-           setEmail('suryasukmana.co.id@gmail.com');
+           const savedEmail = localStorage.getItem('mtask_user_email');
+           if (savedEmail) {
+             setEmail(savedEmail);
+           } else {
+             // Fallback
+             setEmail('designify.creative7@gmail.com');
+           }
          }
       });
       return () => unsubscribe();

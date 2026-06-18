@@ -12,6 +12,42 @@ function formatDateMMDDYY(dateStr: string) {
   return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
 }
 
+function formatToMMDDYYYY(dateStr: string): string {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return dateStr;
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const year = d.getFullYear();
+  return `${month}/${day}/${year}`;
+}
+
+function getDuration(assignDateStr: string, completeDateStr: string): string {
+  if (!assignDateStr || !completeDateStr) return '';
+  const start = new Date(assignDateStr);
+  const end = new Date(completeDateStr);
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) return '';
+
+  const diffTime = end.getTime() - start.getTime();
+  const totalDays = Math.max(0, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
+
+  let months = end.getMonth() - start.getMonth() + (12 * (end.getFullYear() - start.getFullYear()));
+  let days = end.getDate() - start.getDate();
+
+  if (days < 0) {
+    months--;
+    const prevMonth = new Date(end.getFullYear(), end.getMonth(), 0);
+    days += prevMonth.getDate();
+  }
+
+  if (months < 0) {
+    months = 0;
+    days = totalDays;
+  }
+
+  return `(dur : ${days} day,${months} month)`;
+}
+
 function getDueDaysLeft(dueDateStr: string): { label: string, days: number, isOverdue: boolean } {
   const due = new Date(dueDateStr);
   if (isNaN(due.getTime())) return { label: '', days: 0, isOverdue: false };
@@ -109,6 +145,8 @@ export function MyTask() {
           const pioIdx = headers.findIndex((h: string) => h?.trim().toUpperCase() === 'TASK PRIORITY' || h?.trim().toUpperCase() === 'PRIORITY');
           const dueIdx = headers.findIndex((h: string) => h?.trim().toUpperCase() === 'TASK DUE DATE' || h?.trim().toUpperCase() === 'DUE DATE');
           const userIdx = headers.findIndex((h: string) => h?.trim().toUpperCase() === 'USER' || h?.trim().toUpperCase() === 'EMAIL');
+          const assignIdx = headers.findIndex((h: string) => h?.trim().toUpperCase() === 'TASK ASSIGN DATE' || h?.trim().toUpperCase() === 'ASSIGN DATE' || h?.trim().toUpperCase() === 'DATE ASSIGN' || h?.trim().toUpperCase() === 'TASK_ASSIGN_DATE');
+          const completeIdx = headers.findIndex((h: string) => h?.trim().toUpperCase() === 'TASK COMPLETE DATE' || h?.trim().toUpperCase() === 'COMPLETE DATE' || h?.trim().toUpperCase() === 'TASK COMPLETE_DATE' || h?.trim().toUpperCase() === 'TASK COMPLETE DATE');
 
           if (taskIdIdx > -1) {
             const fetchedTasks = taskRes.values.slice(1).map((row: any[]) => {
@@ -130,7 +168,9 @@ export function MyTask() {
                 dueDate: dueIdx > -1 ? (row[dueIdx] || '') : '',
                 userName: userInfo.name,
                 userPhoto: userInfo.photo,
-                userEmail: uEmail
+                userEmail: uEmail,
+                assignDate: (assignIdx > -1 && row[assignIdx]) ? String(row[assignIdx]).trim() : '',
+                completeDate: (completeIdx > -1 && row[completeIdx]) ? String(row[completeIdx]).trim() : ''
               };
             }).filter((t: any) => t.id);
             setTasks(fetchedTasks);
@@ -290,17 +330,35 @@ export function MyTask() {
                 </div>
               </div>
               
-              {task.dueDate && dueInfo && (
-                <div className="mt-3 pt-3 border-t border-gray-100/60 flex items-center justify-between">
-                  <div className="flex items-center gap-1.5 text-gray-600">
-                    <Clock className="w-3.5 h-3.5" />
-                    <span className="text-xs font-medium">{formatDateMMDDYY(task.dueDate)}</span>
+              {(() => {
+                const isTaskDone = (task.status || '').trim().toUpperCase() === 'DONE' || (task.status || '').trim().toUpperCase() === 'COMPLETE' || (task.status || '').trim().toUpperCase() === 'SELESAI';
+                return ((task.dueDate && dueInfo) || isTaskDone) && (
+                  <div className="mt-3 pt-3 border-t border-gray-100/60 flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-gray-600">
+                      <Clock className="w-3.5 h-3.5" />
+                      <span className="text-xs font-medium">{task.dueDate ? formatDateMMDDYY(task.dueDate) : '-'}</span>
+                    </div>
+                    {isTaskDone ? (
+                      <div className="text-right flex flex-col items-end">
+                        <div className="text-[10px] font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
+                          Done @ {formatToMMDDYYYY(task.completeDate)}
+                        </div>
+                        {task.assignDate && task.completeDate ? (
+                          <span className="text-[10px] text-gray-400 mt-1 font-mono">
+                            {getDuration(task.assignDate, task.completeDate)}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : (
+                      dueInfo && (
+                        <div className={cn("text-[10px] font-semibold px-2 py-0.5 rounded-full", dueInfo.isOverdue ? "bg-red-50 text-red-600" : "bg-green-50 text-green-600")}>
+                           {dueInfo.days} {dueInfo.label}
+                        </div>
+                      )
+                    )}
                   </div>
-                  <div className={cn("text-[10px] font-semibold px-2 py-0.5 rounded-full", dueInfo.isOverdue ? "bg-red-50 text-red-600" : "bg-green-50 text-green-600")}>
-                     {dueInfo.days} {dueInfo.label}
-                  </div>
-                </div>
-              )}
+                );
+              })()}
             </motion.div>
           );
         })}
