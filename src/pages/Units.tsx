@@ -93,7 +93,7 @@ export function Units() {
             <span className="ml-2 text-sm text-gray-500">Memuat data...</span>
           </div>
         )}
-        {!isLoading && filteredUnits.map((u) => {
+        {!isLoading && filteredUnits.map((u, idx) => {
           let badgeBg = 'bg-gray-100 text-gray-700';
           const s = u.status.toLowerCase().trim();
           if (s.includes('active') || s.includes('aktif')) {
@@ -104,7 +104,7 @@ export function Units() {
 
           return (
             <motion.div 
-              key={u.id}
+              key={`${u.id}-${idx}`}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               onClick={() => navigate(`/units/${u.id}`)}

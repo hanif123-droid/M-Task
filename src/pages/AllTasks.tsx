@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { ArrowLeft, Filter, Search, X, Plus, Loader2, Clock } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { cn } from '../lib/utils';
+import { cn, formatImageUrl } from '../lib/utils';
 import { getSheetData } from '../lib/api';
 
 function formatDateMMDDYY(dateStr: string) {
@@ -66,7 +66,16 @@ function getDueDaysLeft(dueDateStr: string): { label: string, days: number, isOv
 
 export function AllTasks() {
   const navigate = useNavigate();
-  const [search, setSearch] = useState('');
+  const [searchParams] = useSearchParams();
+  const initialSearch = searchParams.get('q') || searchParams.get('search') || '';
+  const [search, setSearch] = useState(initialSearch);
+
+  useEffect(() => {
+    const q = searchParams.get('q') || searchParams.get('search');
+    if (q) {
+      setSearch(q);
+    }
+  }, [searchParams]);
   const [showFilter, setShowFilter] = useState(false);
   const [showAddTask, setShowAddTask] = useState(false);
   const [tasks, setTasks] = useState<any[]>([]);
@@ -117,11 +126,12 @@ export function AllTasks() {
           }
         }
 
-        const projMap = new Map<string, {name: string, unitId: string}>();
+        const projMap = new Map<string, {name: string, unitId: string, status: string}>();
         if (projRes?.values?.length > 0) {
           const headers = projRes.values[0] as string[];
           const idIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'PROJECT ID');
           const nameIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'PROJECT NAME');
+          const statusIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'STATUS' || h?.trim().toUpperCase() === 'PROJECT STATUS');
           const possibleUnitIdx = headers.findIndex(h => {
              const key = h?.trim().toUpperCase();
              return key === 'UNIT' || key === 'UNIT ID' || key === 'ID UNIT' || key === 'UNIT_ID';
@@ -132,7 +142,8 @@ export function AllTasks() {
               if (id) {
                 projMap.set(id, {
                   name: nameIdx > -1 ? (row[nameIdx] || id) : id,
-                  unitId: possibleUnitIdx > -1 ? row[possibleUnitIdx]?.trim() : ''
+                  unitId: possibleUnitIdx > -1 ? row[possibleUnitIdx]?.trim() : '',
+                  status: statusIdx > -1 ? (row[statusIdx] || '').trim().toLowerCase() : ''
                 });
               }
             });
@@ -157,7 +168,7 @@ export function AllTasks() {
               const pId = projIdIdx > -1 ? row[projIdIdx]?.trim() : '';
               const uEmail = userIdx > -1 ? row[userIdx]?.trim() : '';
               
-              const projInfo = projMap.get(pId) || { name: 'Unknown Project', unitId: '' };
+              const projInfo = projMap.get(pId) || { name: 'Unknown Project', unitId: '', status: '' };
               const unitName = unitMap.has(projInfo.unitId) ? unitMap.get(projInfo.unitId) : (projInfo.unitId || 'Unknown Unit');
               const userInfo = userMap.get(uEmail) || { name: uEmail || 'Unknown User', photo: `https://ui-avatars.com/api/?name=${encodeURIComponent(uEmail || 'U')}&background=eff6ff&color=3b82f6` };
 
@@ -165,6 +176,7 @@ export function AllTasks() {
                 id,
                 title: taskNameIdx > -1 ? (row[taskNameIdx] || 'No Title') : 'No Title',
                 project: projInfo.name,
+                projectStatus: projInfo.status,
                 unit: unitName,
                 status: statusIdx > -1 ? (row[statusIdx] || 'Unknown') : 'Unknown',
                 priority: pioIdx > -1 ? (row[pioIdx] || 'Normal') : 'Normal',
@@ -175,7 +187,16 @@ export function AllTasks() {
                 assignDate: (assignIdx > -1 && row[assignIdx]) ? String(row[assignIdx]).trim() : '',
                 completeDate: (completeIdx > -1 && row[completeIdx]) ? String(row[completeIdx]).trim() : ''
               };
-            }).filter((t: any) => t.id);
+            }).filter((t: any) => {
+              if (!t.id) return false;
+              // Filter out tasks if their project status is 'not started' or 'canceled'
+              const pStatus = (t.projectStatus || '').trim().toLowerCase();
+              const normStatus = pStatus.replace(/[\s_-]+/g, '');
+              if (normStatus === 'notstarted' || pStatus === 'not started' || normStatus === 'canceled' || normStatus === 'cancelled' || normStatus === 'cancel') {
+                return false;
+              }
+              return true;
+            });
             setTasks(fetchedTasks);
           }
         }
@@ -192,18 +213,19 @@ export function AllTasks() {
 
   const filteredTasks = tasks.filter(t => {
     const matchSearch = t.title.toLowerCase().includes(search.toLowerCase());
-    const matchStatus = statusFilter ? t.status === statusFilter : true;
+    const matchStatus = statusFilter ? t.status?.toLowerCase().replace(/\s/g, '') === statusFilter.toLowerCase().replace(/\s/g, '') : true;
     const matchUnit = unitFilter ? t.unit === unitFilter : true;
     return matchSearch && matchStatus && matchUnit;
   });
 
   const getStatusPriority = (status: string) => {
-    const s = status.toLowerCase().trim();
-    if (s.includes('not started') || s.includes('belum mulai')) return 1;
-    if (s.includes('on going') || s.includes('ongoing')) return 2;
-    if (s.includes('complete') || s.includes('done') || s.includes('selesai')) return 3;
-    if (s.includes('cancel') || s.includes('batal')) return 4;
-    return 5;
+    const s = (status || '').toLowerCase().trim();
+    if (s.includes('todo') || s.includes('to do') || s.includes('not started') || s.includes('belum mulai')) return 1;
+    if (s.includes('review')) return 2;
+    if (s.includes('on going') || s.includes('ongoing')) return 3;
+    if (s.includes('complete') || s.includes('done') || s.includes('selesai')) return 4;
+    if (s.includes('cancel') || s.includes('batal')) return 5;
+    return 6;
   };
 
   const sortedTasks = [...filteredTasks].sort((a, b) => {
@@ -245,17 +267,20 @@ export function AllTasks() {
             <span className="ml-2 text-sm text-gray-500">Memuat data...</span>
           </div>
         )}
-        {!isLoading && sortedTasks.map((task) => {
+        {!isLoading && sortedTasks.map((task, idx) => {
           let cardBg = 'bg-white border-gray-100';
           let badgeBg = 'bg-gray-100 text-gray-700';
           
-          const s = task.status.toLowerCase().trim();
-          if (s.includes('not started') || s.includes('belum mulai')) {
+          const s = (task.status || '').toLowerCase().trim();
+          if (s.includes('todo') || s.includes('to do') || s.includes('not started') || s.includes('belum mulai')) {
             cardBg = 'bg-slate-50 border-slate-200';
             badgeBg = 'bg-slate-200 text-slate-800';
           } else if (s.includes('on going') || s.includes('ongoing')) {
             cardBg = 'bg-blue-50 border-blue-200';
             badgeBg = 'bg-blue-200 text-blue-800';
+          } else if (s.includes('review')) {
+            cardBg = 'bg-yellow-50 border-yellow-200';
+            badgeBg = 'bg-yellow-200 text-yellow-800';
           } else if (s.includes('complete') || s.includes('done') || s.includes('selesai')) {
             cardBg = 'bg-green-50 border-green-200';
             badgeBg = 'bg-green-200 text-green-800';
@@ -274,7 +299,7 @@ export function AllTasks() {
 
           return (
             <motion.div 
-              key={task.id}
+              key={`${task.id}-${idx}`}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               onClick={() => navigate(`/tasks/${task.id}`)}
@@ -391,7 +416,7 @@ export function AllTasks() {
                 <div>
                   <h4 className="text-sm font-semibold text-gray-900 mb-3">Status</h4>
                   <div className="flex gap-2">
-                    {['On going', 'Complete'].map((st) => (
+                    {['To Do', 'Review', 'Done'].map((st) => (
                       <button
                         key={st}
                         onClick={() => setStatusFilter(statusFilter === st ? null : st)}

@@ -1,12 +1,14 @@
 import { useState, useEffect, useRef, FormEvent } from 'react';
-import { ArrowLeft, Edit2, DollarSign, Clock, Paperclip, CheckCircle2, FileText, Loader2, X, Plus, ChevronUp, ChevronDown, Image as ImageIcon, Link as LinkIcon, StickyNote, File as FileIcon, Globe } from 'lucide-react';
+import { ArrowLeft, Edit2, DollarSign, Clock, Paperclip, CheckCircle2, FileText, Loader2, X, Plus, ChevronUp, ChevronDown, ChevronRight, Image as ImageIcon, Link as LinkIcon, StickyNote, File as FileIcon, Globe, Camera, Database } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { cn } from '../lib/utils';
-import { getSheetData, appendSheetData } from '../lib/api';
+import { cn, formatImageUrl, formatUnitName } from '../lib/utils';
+import { getSheetData, appendSheetData, updateSheetData, appendSheetDataFromId, getSheetDataFromId, updateSheetDataFromId } from '../lib/api';
 import { DriveService } from '../lib/driveService';
-import { auth } from '../lib/firebase';
+import { logActivity } from '../lib/activityLogger';
 import { CameraModal } from '../components/CameraModal';
+import { OrderBudgetNotaUploader } from '../components/OrderBudgetNotaUploader';
+import { triggerNotificationFeedback } from '../utils/feedback';
 
 function formatIDR(amount: number) {
   return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(amount);
@@ -16,6 +18,16 @@ function formatDateMMDDYY(dateStr: string) {
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return dateStr;
   return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+}
+
+function formatCompleteDate(dateStr: string) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return dateStr;
+  const mm = (d.getMonth() + 1).toString().padStart(2, '0');
+  const dd = d.getDate().toString().padStart(2, '0');
+  const yyyy = d.getFullYear();
+  return `${mm}/${dd}/${yyyy}`;
 }
 
 function getDueDaysLeft(dueDateStr: string): { label: string, days: number, isOverdue: boolean } {
@@ -40,7 +52,6 @@ function formatDocTimestamp(tsStr: string) {
   const d = new Date(tsStr);
   if (isNaN(d.getTime())) return tsStr;
   const now = new Date();
-  // If it's today and within a few hours or just exactly today, we can output 'Just Now', let's just make it simple: if date is today, return 'Just Now'
   const isToday = d.getDate() === now.getDate() && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
   if (isToday) return 'Just Now';
   return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
@@ -88,6 +99,7 @@ function PhotoViewer({ src, alt }: { src: string, alt: string }) {
 export function ActivityDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const currentUserEmail = localStorage.getItem('mtask_user_email') || 'designify.creative7@gmail.com';
   const [isLoading, setIsLoading] = useState(true);
   const [activity, setActivity] = useState<any>(null);
   
@@ -110,6 +122,8 @@ export function ActivityDetail() {
   const [addDocLink, setAddDocLink] = useState('');
   const [addDocNote, setAddDocNote] = useState('');
   const [isUploadingDok, setIsUploadingDok] = useState(false);
+  const [docToSaveAsData, setDocToSaveAsData] = useState<any | null>(null);
+  const [isSavingDocData, setIsSavingDocData] = useState(false);
   const [showCameraModal, setShowCameraModal] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   
@@ -126,17 +140,25 @@ export function ActivityDetail() {
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (toastMessage) {
+      triggerNotificationFeedback();
+    }
+  }, [toastMessage]);
+
   // Order Budget dynamic states
   const [contacts, setContacts] = useState<{ id: string; name: string; type: string }[]>([]);
   const [orderStatus, setOrderStatus] = useState<string>('');
+  const [reviewTier, setReviewTier] = useState<string>('');
   const [orderHeaders, setOrderHeaders] = useState<string[]>([]);
   const [parentTaskInfo, setParentTaskInfo] = useState<{ taskId: string; projectId: string; unitId: string } | null>(null);
   const [showOrderBudgetModal, setShowOrderBudgetModal] = useState<boolean>(false);
+  const [activeUserName, setActiveUserName] = useState<string>('');
+  const [unitNameMap, setUnitNameMap] = useState<Record<string, string>>({});
 
   // Form states for Order Budget
-  const [obType, setObType] = useState<string>('');
-  const [obVendorId, setObVendorId] = useState<string>('');
-  const [obTallentId, setObTallentId] = useState<string>('');
+  const [obOrderType, setObOrderType] = useState<string>('');
+  const [obKepada, setObKepada] = useState<string>('');
   const [obAmount, setObAmount] = useState<string>('');
   const [obVia, setObVia] = useState<string>('');
   const [obBank, setObBank] = useState<string>('');
@@ -150,45 +172,109 @@ export function ActivityDetail() {
   const [obEwalletNo, setObEwalletNo] = useState<string>('');
   const [obVirtualNo, setObVirtualNo] = useState<string>('');
   const [isSubmittingOrder, setIsSubmittingOrder] = useState<boolean>(false);
-  const [obNotaFile, setObNotaFile] = useState<File | null>(null);
+  const [obNotaFiles, setObNotaFiles] = useState<File[]>([]);
+
+  const [tallentList, setTallentList] = useState<any[]>([]);
+
+  const [vendorList, setVendorList] = useState<any[]>([]);
+  const [showAddVendorModal, setShowAddVendorModal] = useState(false);
+  const [showAddTallentModal, setShowAddTallentModal] = useState(false);
+  
+  const [newContactName, setNewContactName] = useState('');
+  const [newContactEmail, setNewContactEmail] = useState('');
+  const [newContactPhone, setNewContactPhone] = useState('');
+  const [newContactUsecase, setNewContactUsecase] = useState('');
+  const [newContactAddress, setNewContactAddress] = useState('');
+  const [newContactWebsite, setNewContactWebsite] = useState('');
+  const [isSubmittingContact, setIsSubmittingContact] = useState(false);
+
 
   const obFileInputRef = useRef<HTMLInputElement>(null);
   const obNotaFileInputRef = useRef<HTMLInputElement>(null);
+  const obNotaCameraInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     async function fetchData() {
       if (!id) return;
       try {
         setIsLoading(true);
-        const [subRes1, subRes2, userRes, dokRes1, dokRes2, taskRes, projectRes, contactRes, orderRes1, orderRes2] = await Promise.all([
+        const [subRes1, subRes2, userRes, dokRes1, dokRes2, taskRes, projectRes, contactRes, orderRes1, orderRes2, unitRes] = await Promise.all([
           getSheetData('Subtask!A1:Z3000').catch(() => null),
           getSheetData('Sub Task!A1:Z3000').catch(() => null),
           getSheetData('User!A1:Z500').catch(() => null),
-          getSheetData('Dok Sub Task!A1:Z3000').catch(() => null),
-          getSheetData('Dok Subtask!A1:Z3000').catch(() => null),
+          getSheetDataFromId('1UB6-zV6go7IQsA6NA9oe-l7w-P6m-vgjJnmXt00vsao', 'Dok Sub Task!A1:Z3000').catch(() => null),
+          getSheetDataFromId('1UB6-zV6go7IQsA6NA9oe-l7w-P6m-vgjJnmXt00vsao', 'Dok Subtask!A1:Z3000').catch(() => null),
           getSheetData('Task!A1:Z2000').catch(() => null),
           getSheetData('Project!A1:Z1000').catch(() => null),
           getSheetData('Contact!A1:Z500').catch(() => null),
           getSheetData('Order Budget!A1:Z3000').catch(() => null),
           getSheetData('OrderBudget!A1:Z3000').catch(() => null),
+          getSheetData('Unit!A1:Z500').catch(() => null),
         ]);
 
         const userMap = new Map<string, { photo: string, name: string }>();
+        const vendors: any[] = [];
+        const tallents: any[] = [];
         if (userRes?.values?.length > 0) {
           const headers = userRes.values[0] as string[];
           const emailIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'EMAIL');
           const photoIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'PHOTO' || h?.trim().toUpperCase() === 'AVATAR');
           const nameIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'NAME');
+          const roleIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'ROLE');
           if (emailIdx > -1) {
             userRes.values.slice(1).forEach((row: any[]) => {
               const email = row[emailIdx]?.trim();
+              const role = roleIdx > -1 ? row[roleIdx]?.trim() : '';
               if (email) {
                 userMap.set(email, {
                   photo: (photoIdx > -1 && row[photoIdx]) ? row[photoIdx] : `https://ui-avatars.com/api/?name=${encodeURIComponent(row[nameIdx] || email)}&background=eff6ff&color=3b82f6`,
                   name: (nameIdx > -1 && row[nameIdx]) ? row[nameIdx] : email.split('@')[0],
                 });
               }
+              if (role?.toLowerCase() === 'vendor' && nameIdx > -1 && row[nameIdx]) {
+                vendors.push({
+                  id: row[0], // ID is usually index 0
+                  name: row[nameIdx],
+                  email: email || '',
+                  role: role
+                });
+              }
+              if (role?.toLowerCase() === 'tallent' && nameIdx > -1 && row[nameIdx]) {
+                tallents.push({
+                  id: row[0],
+                  name: row[nameIdx],
+                  email: email || '',
+                  role: role
+                });
+              }
             });
+
+            setVendorList(vendors);
+            setTallentList(tallents);
+
+            if (currentUserEmail) {
+              const userRow = userRes.values.slice(1).find((row: any[]) => row[emailIdx]?.trim().toLowerCase() === currentUserEmail.toLowerCase());
+              if (userRow && nameIdx > -1 && userRow[nameIdx]) {
+                setActiveUserName(userRow[nameIdx].trim());
+              }
+            }
+          }
+        }
+
+        if (unitRes?.values?.length > 0) {
+          const uHeaders = unitRes.values[0] as string[];
+          const uIdIdx = uHeaders.findIndex(h => h?.trim().toUpperCase() === 'ID' || h?.trim().toUpperCase() === 'UNIT ID');
+          const uNameIdx = uHeaders.findIndex(h => h?.trim().toUpperCase() === 'UNIT NAME');
+          if (uIdIdx > -1 && uNameIdx > -1) {
+            const tempMap: Record<string, string> = {};
+            unitRes.values.slice(1).forEach((row: any[]) => {
+              const uId = row[uIdIdx]?.trim();
+              const uName = row[uNameIdx]?.trim();
+              if (uId && uName) {
+                tempMap[uId] = uName;
+              }
+            });
+            setUnitNameMap(tempMap);
           }
         }
 
@@ -202,17 +288,22 @@ export function ActivityDetail() {
           
           const dokIdIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'DOK SUB ID' || h?.trim().toUpperCase() === 'ID');
           const subIdIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'SUB_ID' || h?.trim().toUpperCase() === 'SUB ID' || h?.trim().toUpperCase() === 'SUBTASK ID');
-          const nameIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'TITLE_DOK' || h?.trim().toUpperCase() === 'TITLE DOK' || h?.trim().toUpperCase() === 'NAME' || h?.trim().toUpperCase() === 'FILE NAME' || h?.trim().toUpperCase() === 'TITLE');
+          const nameIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'TITLE_DOK' || h?.trim().toUpperCase() === 'JUDUL' || h?.trim().toUpperCase() === 'TITLE DOK' || h?.trim().toUpperCase() === 'NAME' || h?.trim().toUpperCase() === 'FILE NAME' || h?.trim().toUpperCase() === 'TITLE');
           const typeIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'DOK_TYPE' || h?.trim().toUpperCase() === 'DOK TYPE' || h?.trim().toUpperCase() === 'TYPE');
           const tsIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'TIMESTAMP' || h?.trim().toUpperCase() === 'TIME' || h?.trim().toUpperCase() === 'DATE');
           const image01Idx = headers.findIndex(h => h?.trim().toUpperCase() === 'IMAGE_01' || h?.trim().toUpperCase() === 'IMAGE 01' || h?.trim().toUpperCase() === 'IMAGE');
           const noteIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'NOTE');
           const file01Idx = headers.findIndex(h => h?.trim().toUpperCase() === 'FILE_01' || h?.trim().toUpperCase() === 'FILE 01' || h?.trim().toUpperCase() === 'FILE');
           const url01Idx = headers.findIndex(h => h?.trim().toUpperCase() === 'URL_01' || h?.trim().toUpperCase() === 'URL 01' || h?.trim().toUpperCase() === 'URL');
+          const dataIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'DATA');
           
           if (subIdIdx > -1) {
-            dokRes.values.slice(1).forEach((row: any[]) => {
-              if (row[subIdIdx]?.trim() === id) {
+            dokRes.values.slice(1).forEach((row: any[], rIdx: number) => {
+              const rowIdRaw = row[subIdIdx]?.toString() || '';
+              const rowIdMatch = rowIdRaw.trim().replace(/^#/, '').toUpperCase();
+              const targetIdMatch = id?.trim().replace(/^#/, '').toUpperCase() || '';
+              if (rowIdMatch === targetIdMatch && targetIdMatch !== '') {
+                const isDataValue = dataIdx > -1 ? (row[dataIdx]?.toString().trim().toUpperCase() === 'TRUE') : false;
                 documents.push({
                   id: dokIdIdx > -1 ? row[dokIdIdx] : Math.random().toString(),
                   name: nameIdx > -1 ? row[nameIdx] : 'Unknown Document',
@@ -222,6 +313,8 @@ export function ActivityDetail() {
                   note: noteIdx > -1 ? row[noteIdx] : '',
                   file01: file01Idx > -1 ? row[file01Idx] : '',
                   url01: url01Idx > -1 ? row[url01Idx] : '',
+                  isData: isDataValue,
+                  rowIndex: rIdx + 2,
                 });
               }
             });
@@ -268,11 +361,14 @@ export function ActivityDetail() {
               const mainStatusValue = oStatusIdx > -1 ? relatedRow[oStatusIdx]?.trim() : undefined;
               const fallbackStatusValue = oStatusFallbackIdx > -1 ? relatedRow[oStatusFallbackIdx]?.trim() : undefined;
               setOrderStatus(mainStatusValue !== undefined ? mainStatusValue : (fallbackStatusValue || ''));
+              setReviewTier(mainStatusValue || '');
             } else {
               setOrderStatus('');
+              setReviewTier('');
             }
           } else {
             setOrderStatus('');
+            setReviewTier('');
           }
         }
 
@@ -289,6 +385,7 @@ export function ActivityDetail() {
           const expIdx = headers.findIndex((h: string) => h?.trim().toUpperCase() === 'AMOUNT' || h?.trim().toUpperCase() === 'EXPENSES' || h?.trim().toUpperCase() === 'EXPENSE');
           const dueIdx = headers.findIndex((h: string) => h?.trim().toUpperCase() === 'SUBTASK DUE DATE' || h?.trim().toUpperCase() === 'DUE DATE');
           const userIdx = headers.findIndex((h: string) => h?.trim().toUpperCase() === 'USER' || h?.trim().toUpperCase() === 'ASSIGNED TO');
+          const compDateIdx = headers.findIndex((h: string) => h?.trim().toUpperCase() === 'SUBTASK COMPLETE DATE' || h?.trim().toUpperCase() === 'COMPLETE DATE' || h?.trim().toUpperCase() === 'SUBTASK COMPLETED DATE' || h?.trim().toUpperCase() === 'COMPLETED DATE');
 
           if (subtaskIdIdx > -1) {
             const rowIndex = subRes.values.findIndex((r: any[], i: number) => i > 0 && r[subtaskIdIdx]?.trim() === id);
@@ -359,7 +456,8 @@ export function ActivityDetail() {
                 expense: sExp,
                 dueDate: dueIdx > -1 ? (row[dueIdx] || new Date().toISOString()) : new Date().toISOString(),
                 assignedTo: userInfo,
-                documents: documents
+                documents: documents,
+                completeDate: compDateIdx > -1 ? row[compDateIdx] : ''
               });
             }
           }
@@ -373,7 +471,7 @@ export function ActivityDetail() {
     fetchData();
   }, [id]);
 
-  const handleAddDocumentSubmit = async () => {
+  const handleAddDocumentSubmit = async (isData: boolean) => {
     if (!addDocType) return;
     try {
       setIsUploadingDok(true);
@@ -381,60 +479,95 @@ export function ActivityDetail() {
       let finalImageUrl = '';
       let finalFileUrl = '';
       let finalLink = '';
-      let finalNote = '';
+      let finalNote = addDocNote;
       
       if (addDocType === 'Photo' && addDocFile) {
         const res = await DriveService.uploadFile(addDocFile);
-        finalImageUrl = `https://drive.google.com/file/d/${res.id}/view?usp=drivesdk`;
+        finalImageUrl = res.url;
       } else if (addDocType === 'File' && addDocFile) {
         const res = await DriveService.uploadFile(addDocFile);
-        finalFileUrl = `https://drive.google.com/file/d/${res.id}/view?usp=drivesdk`;
+        finalFileUrl = res.url;
       } else if (addDocType === 'Link') {
         finalLink = addDocLink;
-      } else if (addDocType === 'Note') {
-        finalNote = addDocNote;
       }
       
-      const newDokId = `DSK-${new Date().getTime().toString().slice(-6)}`;
+      const newDokId = `DSK${Date.now().toString().slice(-4)}`;
       const ts = (() => {
         const d = new Date();
-        return `${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getDate().toString().padStart(2, '0')}/${d.getFullYear()}`;
+        const mm = (d.getMonth() + 1).toString().padStart(2, '0');
+        const dd = d.getDate().toString().padStart(2, '0');
+        const yyyy = d.getFullYear();
+        let hr = d.getHours();
+        const mins = d.getMinutes().toString().padStart(2, '0');
+        const ampm = hr >= 12 ? 'PM' : 'AM';
+        hr = hr % 12;
+        hr = hr ? hr : 12; 
+        return `${mm}/${dd}/${yyyy}, ${hr.toString().padStart(2, '0')}:${mins} ${ampm}`;
       })();
-      const currentUserEmail = auth.currentUser?.email || 'guest@example.com';
+      const currentUserEmail = localStorage.getItem('mtask_user_email') || 'guest@example.com';
       
       // Determine what to append based on existing headers
       let headersToUse = dokHeaders.length > 0 ? dokHeaders : [];
-      let newRow: any[] = [];
       
-      // Fallback ordered columns if we cannot find headers (assuming standard order):
-      // Timestamp | Dok Sub ID | Sub_ID | User | Title_Dok | Dok_Type | Image_01 | Note | File_01 | Url_01
       if (headersToUse.length === 0) {
-        headersToUse = ['Timestamp', 'Dok Sub ID', 'Sub_ID', 'User', 'Title_Dok', 'Dok_Type', 'Image_01', 'Note', 'File_01', 'Url_01'];
+        headersToUse = ['Timestamp', 'Dok Sub ID', 'Sub_ID', 'User', 'Title_Dok', 'Dok_Type', 'Image_01', 'Note', 'File_01', 'Url_01', 'DATA'];
+      } else {
+        const hasData = headersToUse.some(h => h?.trim().toUpperCase() === 'DATA');
+        if (!hasData) {
+          headersToUse = [...headersToUse, 'DATA'];
+          try {
+            const nextColLetter = (() => {
+              let temp = headersToUse.length - 1;
+              let letter = "";
+              while (temp >= 0) {
+                letter = String.fromCharCode((temp % 26) + 65) + letter;
+                temp = Math.floor(temp / 26) - 1;
+              }
+              return letter;
+            })();
+            const sheetToUse = dokSheetName || 'Dok Sub Task';
+            const rangeToUpdate = `${sheetToUse}!${nextColLetter}1`;
+            updateSheetDataFromId('1UB6-zV6go7IQsA6NA9oe-l7w-P6m-vgjJnmXt00vsao', rangeToUpdate, [['DATA']]).catch(e => console.warn(e));
+          } catch (headerErr) {
+            console.warn('Failed to dynamically write DATA header:', headerErr);
+          }
+        }
       }
       
-      newRow = new Array(headersToUse.length).fill('');
+      let newRow: any[] = new Array(headersToUse.length).fill('');
       
       const setCol = (name: string, value: string) => {
-        const idx = headersToUse.findIndex(h => {
+        let idx = headersToUse.findIndex(h => h?.trim().toUpperCase() === name.toUpperCase());
+        if (idx === -1) {
+          idx = headersToUse.findIndex(h => {
              const key = h?.trim().toUpperCase() || '';
-             return key === name.toUpperCase() || key.includes(name.toUpperCase());
-        });
+             return key.includes(name.toUpperCase());
+          });
+        }
         if (idx > -1) {
           newRow[idx] = value;
         }
       };
       
+      setCol('TIME', ts); 
       setCol('TIMESTAMP', ts);
       setCol('DOK SUB ID', newDokId);
       setCol('SUB_ID', id || '');
+      setCol('SUBTASK ID', id || '');
       setCol('USER', currentUserEmail);
+      setCol('JUDUL', addDocTitle || ' ');
       setCol('TITLE_DOK', addDocTitle || ' ');
+      setCol('INFO', addDocTitle || ' ');
+      setCol('INFO DETAIL', addDocTitle || ' ');
       setCol('DOK_TYPE', addDocType);
       
-      setCol('IMAGE', finalImageUrl);
-      setCol('FILE', finalFileUrl);
-      setCol('URL', finalLink);
+      setCol('IMAGE_01', finalImageUrl);
+      setCol('FILE_01', finalFileUrl);
+      setCol('URL_01', finalLink);
       setCol('NOTE', finalNote);
+      setCol('CATATAN', finalNote);
+      setCol('DATA', isData ? 'TRUE' : 'FALSE');
+
 
       // Add to local state first to ensure it shows up regardless of API limit
       if (activity) {
@@ -447,6 +580,7 @@ export function ActivityDetail() {
           note: finalNote,
           file01: finalFileUrl,
           url01: finalLink,
+          isData: false,
         };
         setActivity({
           ...activity,
@@ -462,7 +596,12 @@ export function ActivityDetail() {
       setAddDocNote('');
 
       try {
-        await appendSheetData(`${dokSheetName}!A1:Z`, [newRow]);
+        await appendSheetDataFromId('1UB6-zV6go7IQsA6NA9oe-l7w-P6m-vgjJnmXt00vsao', 'Dok Sub Task!A1:Z', [newRow]);
+        const docTitleStr = addDocTitle ? ` ${addDocTitle}` : '';
+        const currentUserEmail = localStorage.getItem('mtask_user_email') || '';
+        const userName = activeUserName || localStorage.getItem("mtask_user_name") || (currentUserEmail ? (currentUserEmail.includes('@') ? currentUserEmail.split('@')[0] : currentUserEmail) : 'User');
+        const stRefId = activity?.taskId || id || '';
+        logActivity('subTask', 'subtask Detail', `${userName} menambahkan ${addDocType}${docTitleStr} di subtask "${activity?.title || 'subtask'}" [${stRefId}]`);
       } catch (err: any) {
         if (err.message !== 'Mock authentication used, bypassing Sheets API' && err.message !== 'Not authenticated') {
           console.error('Failed appending to sheet', err);
@@ -477,6 +616,112 @@ export function ActivityDetail() {
     }
   };
 
+  const handleSaveDocAsData = async (doc: any) => {
+    if (!doc) return;
+    try {
+      setIsSavingDocData(true);
+      const sheetToUse = dokSheetName || 'Dok Sub Task';
+      const SPREADSHEET_ID = '1UB6-zV6go7IQsA6NA9oe-l7w-P6m-vgjJnmXt00vsao';
+
+      // 1. Fetch current header and rows to find exact position
+      const dokRes = await getSheetDataFromId(SPREADSHEET_ID, `${sheetToUse}!A1:Z3000`).catch(() => null);
+      if (!dokRes?.values || dokRes.values.length === 0) {
+        throw new Error('Data lembar kerja dokumen tidak ditemukan');
+      }
+
+      let headers = dokRes.values[0] as string[];
+      let dataColIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'DATA');
+
+      if (dataColIdx === -1) {
+        // Need to add DATA header to row 1
+        dataColIdx = headers.length;
+        headers = [...headers, 'DATA'];
+        let temp = dataColIdx;
+        let letter = "";
+        while (temp >= 0) {
+          letter = String.fromCharCode((temp % 26) + 65) + letter;
+          temp = Math.floor(temp / 26) - 1;
+        }
+        await updateSheetDataFromId(SPREADSHEET_ID, `${sheetToUse}!${letter}1`, [['DATA']]);
+        setDokHeaders(headers);
+      }
+
+      // Compute column letter for dataColIdx
+      let temp = dataColIdx;
+      let colLetter = "";
+      while (temp >= 0) {
+        colLetter = String.fromCharCode((temp % 26) + 65) + colLetter;
+        temp = Math.floor(temp / 26) - 1;
+      }
+
+      // 2. Locate target row in sheet
+      const dokIdIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'DOK SUB ID' || h?.trim().toUpperCase() === 'ID');
+      const subIdIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'SUB_ID' || h?.trim().toUpperCase() === 'SUB ID' || h?.trim().toUpperCase() === 'SUBTASK ID');
+      const titleIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'TITLE_DOK' || h?.trim().toUpperCase() === 'JUDUL' || h?.trim().toUpperCase() === 'NAME');
+
+      let targetRowIndex = doc.rowIndex || -1;
+      const cleanSubId = id?.trim().replace(/^#/, '').toUpperCase() || '';
+
+      const foundIdx = dokRes.values.slice(1).findIndex((r: any[]) => {
+        if (dokIdIdx > -1 && doc.id && r[dokIdIdx]?.toString().trim() === doc.id.toString().trim()) {
+          return true;
+        }
+        if (titleIdx > -1 && doc.name && r[titleIdx]?.toString().trim() === doc.name.toString().trim()) {
+          if (subIdIdx > -1 && cleanSubId) {
+            const rowSub = r[subIdIdx]?.toString().trim().replace(/^#/, '').toUpperCase();
+            if (rowSub === cleanSubId) return true;
+          } else {
+            return true;
+          }
+        }
+        return false;
+      });
+
+      if (foundIdx > -1) {
+        targetRowIndex = foundIdx + 2; // +1 for 0-indexed slice, +1 for 1-based header row
+      }
+
+      if (targetRowIndex > 1) {
+        await updateSheetDataFromId(SPREADSHEET_ID, `${sheetToUse}!${colLetter}${targetRowIndex}`, [['TRUE']]);
+      } else {
+        throw new Error('Baris dokumen tidak ditemukan di spreadsheet.');
+      }
+
+      // 3. Update local state
+      if (activity) {
+        const updatedDocs = activity.documents.map((d: any) => {
+          if (d.id === doc.id || (doc.name && d.name === doc.name)) {
+            return { ...d, isData: true };
+          }
+          return d;
+        });
+        setActivity({
+          ...activity,
+          documents: updatedDocs
+        });
+      }
+
+      if (selectedDoc && (selectedDoc.id === doc.id || selectedDoc.name === doc.name)) {
+        setSelectedDoc({ ...selectedDoc, isData: true });
+      }
+
+      // 4. Log activity
+      const currentUserEmail = localStorage.getItem('mtask_user_email') || '';
+      const userName = activeUserName || localStorage.getItem("mtask_user_name") || (currentUserEmail ? (currentUserEmail.includes('@') ? currentUserEmail.split('@')[0] : currentUserEmail) : 'User');
+      const docTitle = doc.name ? ` "${doc.name}"` : '';
+      logActivity('subTask', 'subtask Detail', `${userName} menyimpan dokumen${docTitle} sebagai data di subtask "${activity?.title || 'subtask'}" [${id || ''}]`);
+
+      setDocToSaveAsData(null);
+      setToastMessage('Dokumen berhasil disimpan sebagai data!');
+      setTimeout(() => setToastMessage(null), 3000);
+    } catch (err: any) {
+      console.error('Failed saving doc as data:', err);
+      alert('Gagal menyimpan sebagai data: ' + (err.message || 'Error'));
+    } finally {
+      setIsSavingDocData(false);
+    }
+  };
+
   const handleSaveInstruction = async () => {
     try {
       setIsSavingInstruction(true);
@@ -488,12 +733,16 @@ export function ActivityDetail() {
         expenses: activity.expense
       };
 
-      await fetch('https://script.google.com/macros/s/AKfycbzYn2CpEC17pLTcaEo7yiBLm4KF-8In3a_Bp4OaUnBHQuvgFTi43ZthZnHUlhlHXjYEgA/exec', {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify(payload)
-      });
+      try {
+        await fetch('https://script.google.com/macros/s/AKfycbzYn2CpEC17pLTcaEo7yiBLm4KF-8In3a_Bp4OaUnBHQuvgFTi43ZthZnHUlhlHXjYEgA/exec', {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify(payload)
+        });
+      } catch (fetchErr) {
+        console.warn('Network or CORS error updating activity details, proceeding with local fallback:', fetchErr);
+      }
 
       setActivity({ ...activity, instruction: tempInstruction });
       setIsEditingInstruction(false);
@@ -519,12 +768,16 @@ export function ActivityDetail() {
         expenses: val
       };
 
-      await fetch('https://script.google.com/macros/s/AKfycbzYn2CpEC17pLTcaEo7yiBLm4KF-8In3a_Bp4OaUnBHQuvgFTi43ZthZnHUlhlHXjYEgA/exec', {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify(payload)
-      });
+      try {
+        await fetch('https://script.google.com/macros/s/AKfycbzYn2CpEC17pLTcaEo7yiBLm4KF-8In3a_Bp4OaUnBHQuvgFTi43ZthZnHUlhlHXjYEgA/exec', {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify(payload)
+        });
+      } catch (fetchErr) {
+        console.warn('Network or CORS error updating activity expenses, proceeding with local fallback:', fetchErr);
+      }
 
       setActivity({ ...activity, expense: val });
       setIsEditingExpense(false);
@@ -537,9 +790,145 @@ export function ActivityDetail() {
     }
   };
 
+  const handleAddContact = async (e: FormEvent, roleType: 'Vendor' | 'Tallent') => {
+    e.preventDefault();
+    try {
+      setIsSubmittingContact(true);
+      const res = await getSheetData('User!A1:ZZ1').catch(() => null);
+      let userHeaders = ['ID', 'Role', 'Usecase', 'Unit Business', 'Name', 'Email', 'Phone', 'Alamat', 'Website', 'Avail'];
+      if (res?.values?.length > 0) {
+        userHeaders = res.values[0] as string[];
+      }
+      
+      const newRow = new Array(userHeaders.length).fill('');
+      let headersChanged = false;
+      const setCol = (name: string, value: string) => {
+        const normName = name.trim().toUpperCase();
+        let idx = userHeaders.findIndex(h => h?.trim().toUpperCase() === normName || h?.trim().toUpperCase() === normName.replace(/ /g, '_'));
+        if (idx === -1) {
+          idx = userHeaders.length;
+          userHeaders.push(name);
+          headersChanged = true;
+          newRow.push('');
+        }
+        newRow[idx] = value;
+      };
+
+      const prefix = roleType === 'Vendor' ? 'vdr' : 'tln';
+      const contactId = `${prefix}${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+      setCol('ID', contactId);
+      setCol('Name', newContactName);
+      setCol('AVAIL', 'CNT');
+      setCol('Email', newContactEmail);
+      setCol('Phone', newContactPhone);
+      setCol('Role', roleType);
+      setCol('Usecase', newContactUsecase);
+      
+      // Unit uses ID according to user requirements
+      const uId = parentTaskInfo?.unitId || '';
+      setCol('Unit Business', uId);
+      
+      setCol('Alamat', newContactAddress);
+      setCol('Website', newContactWebsite);
+
+      // Truncate trailing empty strings so we don't overwrite columns (like AB and onwards) that might hold formulas
+      while (newRow.length > 0 && newRow[newRow.length - 1] === '') {
+        newRow.pop();
+      }
+
+      await appendSheetData('User', [newRow]);
+      const adderName = activeUserName || localStorage.getItem("mtask_user_name") || "User";
+      logActivity('Add Contact', 'Activity Detail', `${adderName} menambahkan ${roleType} baru bernama "${newContactName}"`);
+
+      const newContactObj = {
+        id: contactId,
+        name: newContactName,
+        email: newContactEmail,
+        role: roleType
+      };
+
+      if (roleType === 'Vendor') {
+        setVendorList(prev => [...prev, newContactObj]);
+        setShowAddVendorModal(false);
+      } else {
+        setTallentList(prev => [...prev, newContactObj]);
+        setShowAddTallentModal(false);
+      }
+      
+      setObKepada(newContactName);
+      setNewContactName('');
+      setNewContactEmail('');
+      setNewContactPhone('');
+      setNewContactUsecase('');
+      setNewContactAddress('');
+      setNewContactWebsite('');
+      setToastMessage(`${roleType} berhasil ditambahkan`);
+      setTimeout(() => setToastMessage(null), 3000);
+    } catch (err) {
+      console.error(err);
+      alert(`Gagal menambah ${roleType.toLowerCase()}`);
+    } finally {
+      setIsSubmittingContact(false);
+    }
+  };
+
   const handleOrderBudgetSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!obType) return;
+
+    if (!obOrderType) {
+      alert("Silakan pilih Order type!");
+      return;
+    }
+    if (!obKepada.trim()) {
+      alert("Silakan pilih atau isi penerima (Kepada)!");
+      return;
+    }
+    const currentAmountVal = obAmount || activity.expense?.toString() || '0';
+    const parsedAmount = parseInt(currentAmountVal.replace(/\D/g, ""), 10);
+    if (!currentAmountVal || isNaN(parsedAmount) || parsedAmount <= 0) {
+      alert("Silakan masukkan nominal pengajuan (Amount) yang valid!");
+      return;
+    }
+    if (!obVia) {
+      alert("Silakan pilih VIA Pembayaran!");
+      return;
+    }
+    if (obVia === 'Transfer') {
+      if (!obBank) {
+        alert("Silakan pilih Bank tujuan transfer!");
+        return;
+      }
+      if (!obRekNo.trim()) {
+        alert("Silakan isi nomor rekening!");
+        return;
+      }
+      if (!obAtasNama.trim()) {
+        alert("Silakan isi nama pemilik rekening (Atas Nama)!");
+        return;
+      }
+    }
+    if (obVia === 'Cash' && !obNote.trim()) {
+      alert("Silakan isi catatan untuk pembayaran Cash!");
+      return;
+    }
+    if (obVia === 'Qris' && !obQrisFile) {
+      alert("Silakan upload foto/gambar QRIS!");
+      return;
+    }
+    if (obVia === 'Ewallet') {
+      if (!obEwalletName) {
+        alert("Silakan pilih jenis E-Wallet!");
+        return;
+      }
+      if (!obEwalletNo.trim()) {
+        alert("Silakan isi nomor E-Wallet / HP!");
+        return;
+      }
+    }
+    if (obVia === 'Virtual Akun' && !obVirtualNo.trim()) {
+      alert("Silakan isi nomor Virtual Account!");
+      return;
+    }
     
     setIsSubmittingOrder(true);
     try {
@@ -548,25 +937,29 @@ export function ActivityDetail() {
         return `${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getDate().toString().padStart(2, '0')}/${d.getFullYear()}`;
       })();
       const randomId = Math.floor(1000 + Math.random() * 9000);
-      const currentUserEmail = auth.currentUser?.email || localStorage.getItem('mtask_user_email') || 'designify.creative7@gmail.com';
+      const currentUserEmail = localStorage.getItem('mtask_user_email') || 'designify.creative7@gmail.com';
       
       let qrisUrl = '';
       if (obVia === 'Qris' && obQrisFile) {
         try {
           const res = await DriveService.uploadFile(obQrisFile);
-          qrisUrl = `https://drive.google.com/file/d/${res.id}/view?usp=drivesdk`;
+          qrisUrl = res.url;
         } catch (uploadErr) {
           console.error('Failed to upload Qris image', uploadErr);
         }
       }
 
       let notaUrl = '';
-      if (obType === 'Reimburse' && obNotaFile) {
+      if ((obOrderType === 'Reimburse' || obOrderType === 'Operational') && obNotaFiles.length > 0) {
         try {
-          const res = await DriveService.uploadFile(obNotaFile);
-          notaUrl = `https://drive.google.com/file/d/${res.id}/view?usp=drivesdk`;
+          const uploadedUrls: string[] = [];
+          for (const file of obNotaFiles) {
+            const res = await DriveService.uploadFile(file);
+            if (res?.url) uploadedUrls.push(res.url);
+          }
+          notaUrl = uploadedUrls.join(" ");
         } catch (uploadErr) {
-          console.error('Failed to upload Reimburse Nota', uploadErr);
+          console.error('Failed to upload Nota Belanja images', uploadErr);
         }
       }
 
@@ -576,10 +969,11 @@ export function ActivityDetail() {
         'Review Tier', 'Email User', 'Date', 'Project_id', 'Task_id', 
         'Sub Task_id', 'Order Type', 'Vendor', 'Tallent', 'Via', 'Bank', 
         'Rek No', 'A n', 'Berita', 'Catatan', 'Qris', 'Ewallet Name', 
-        'Ewallet', 'Virtual', 'Nota Belanja'
+        'Ewallet', 'Virtual', 'Nota Belanja', 'via_nama'
       ];
       
       const newRow = new Array(Math.max(headersToUse.length, 25)).fill('');
+      let headersChanged = false;
       
       const setCol = (name: string, value: string) => {
         const norm = name.trim().toUpperCase();
@@ -592,6 +986,7 @@ export function ActivityDetail() {
         } else {
           idx = headersToUse.length;
           headersToUse.push(name);
+          headersChanged = true;
           while (newRow.length <= idx) {
             newRow.push('');
           }
@@ -599,34 +994,27 @@ export function ActivityDetail() {
         }
       };
 
-      setCol('Order ID', `order-${randomId}`);
-      setCol('RO_NUMBER', `RO-${randomId}`);
+      setCol('Order ID', `ORD${randomId}`);
+      setCol('RO_NUMBER', '');
       setCol('Date', ts);
       setCol('Email User', currentUserEmail);
       setCol('Unit Business', parentTaskInfo?.unitId || '');
       setCol('Project_id', parentTaskInfo?.projectId || '');
       setCol('Task_id', parentTaskInfo?.taskId || '');
       setCol('Sub Task_id', id || '');
-      setCol('Order Detail', '');
-      setCol('Order Type', obType);
       
-      if (obType === 'Vendor') {
-        setCol('Vendor', obVendorId);
-      } else if (obType === 'Tallent') {
-        setCol('Tallent', obTallentId);
-      }
-
-      if (obType === 'Reimburse') {
-        setCol('Nota Belanja', notaUrl);
-      } else {
-        setCol('Nota Belanja', '');
-      }
+      const orderDetailVal = activity.title || '';
+      setCol('Order Detail', orderDetailVal);
+      setCol('Order Type', obOrderType);
+      setCol('Contact ID', obKepada);
+      setCol('Nota Belanja', notaUrl);
       
-      setCol('Amount', obAmount || activity.expense?.toString() || '0');
+      const amountVal = obAmount || activity.expense?.toString() || '0';
+      setCol('Amount', amountVal);
       setCol('Via', obVia);
       
       if (obVia === 'Transfer') {
-        setCol('Bank', obBank);
+        setCol('via_nama', obBank);
         setCol('Rek No', obRekNo);
         setCol('A n', obAtasNama);
         setCol('Berita', obBerita);
@@ -637,25 +1025,55 @@ export function ActivityDetail() {
       } else if (obVia === 'Ewallet') {
         setCol('Ewallet Name', obEwalletName);
         setCol('Ewallet', obEwalletNo);
+        setCol('via_nama', obEwalletName);
       } else if (obVia === 'Virtual Akun') {
         setCol('Virtual', obVirtualNo);
       }
       
-      setCol('Review Tier', 'Review');
-      setCol('Status', 'Review');
+      setCol('Review Tier', 'Admin Check');
+      setCol('Status', 'SENT');
+
+      // Generates "Text gabung" with CONCATENATE rule
+      const userNamePrefix = activeUserName || (currentUserEmail ? currentUserEmail.split('@')[0] : '');
+      const amountNum = parseInt(amountVal.replace(/\D/g, ''), 10) || 0;
+      const formattedAmount = `Rp.${amountNum.toLocaleString('id-ID')}`;
+      const unitBusinessVal = parentTaskInfo?.unitId || '';
+      const unitBusinessName = unitNameMap[unitBusinessVal] || unitBusinessVal;
+      const textGabung = `Order Budget ${orderDetailVal} ${formattedAmount} untuk ${obOrderType} | ${obKepada} via ${obVia} | Unit: ${unitBusinessName}`;
+      setCol('Text gabung', textGabung);
+
+      if (headersChanged) {
+        try {
+          const getLet = (n: number) => {
+            let res = '';
+            while (n >= 0) {
+              res = String.fromCharCode((n % 26) + 65) + res;
+              n = Math.floor(n / 26) - 1;
+            }
+            return res;
+          };
+          const range = `Order Budget!A1:${getLet(headersToUse.length - 1)}1`;
+          await updateSheetData(range, [headersToUse]);
+        } catch (e) {
+          console.warn('Could not update headers', e);
+        }
+      }
 
       // Attempt to append to sheet
       await appendSheetData('Order Budget!A1:Z', [newRow]).catch(async () => {
         await appendSheetData('OrderBudget!A1:Z', [newRow]);
       });
+      const userNameForOb = activeUserName || localStorage.getItem("mtask_user_name") || (currentUserEmail ? (currentUserEmail.includes('@') ? currentUserEmail.split('@')[0] : currentUserEmail) : 'User');
+      const formattedUnitBizName = formatUnitName(unitBusinessName);
+      const obLogDesc = `${userNameForOb} order ${orderDetailVal} ${formattedAmount} untuk ${obOrderType} | ${obKepada} via ${obVia} | Unit : ${formattedUnitBizName}`;
+      logActivity('Order Budget', 'Activity Detail', obLogDesc);
 
       // Update local state
-      setOrderStatus('Review');
+      setOrderStatus('Admin Check');
       
       // Reset form options
-      setObType('');
-      setObVendorId('');
-      setObTallentId('');
+      setObOrderType('');
+      setObKepada('');
       setObAmount('');
       setObVia('');
       setObBank('');
@@ -664,11 +1082,11 @@ export function ActivityDetail() {
       setObBerita('');
       setObNote('');
       setObQrisFile(null);
+      setObNotaFiles([]);
       setObQrisUrl('');
       setObEwalletName('');
       setObEwalletNo('');
       setObVirtualNo('');
-      setObNotaFile(null);
       setShowOrderBudgetModal(false);
       
       setToastMessage('Order Budget berhasil diajukan');
@@ -693,27 +1111,40 @@ export function ActivityDetail() {
         sub_task_id: id
       };
 
-      await fetch('https://script.google.com/macros/s/AKfycbzc95gFQWJTr5xDycc989JmOb7rV9SOogwaeMr0gxVf75hsbmFu5ZF0UH8FhgyksNqTIA/exec', {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: {
-          'Content-Type': 'text/plain',
-        },
-        body: JSON.stringify(payload)
-      });
+      try {
+        await fetch('https://script.google.com/macros/s/AKfycbzc95gFQWJTr5xDycc989JmOb7rV9SOogwaeMr0gxVf75hsbmFu5ZF0UH8FhgyksNqTIA/exec', {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: {
+            'Content-Type': 'text/plain',
+          },
+          body: JSON.stringify(payload)
+        });
+      } catch (fetchErr) {
+        console.warn('Network or CORS error updating subtask status to done, proceeding with local fallback:', fetchErr);
+      }
 
       setToastMessage('Status diperbarui ke Done');
       setTimeout(() => setToastMessage(null), 3000);
 
       const statusIdx = subHeaders.findIndex((h: string) => h?.trim().toUpperCase() === 'STATUS');
+      const compDateIdx = subHeaders.findIndex((h: string) => h?.trim().toUpperCase() === 'SUBTASK COMPLETE DATE' || h?.trim().toUpperCase() === 'COMPLETE DATE' || h?.trim().toUpperCase() === 'SUBTASK COMPLETED DATE' || h?.trim().toUpperCase() === 'COMPLETED DATE');
+      const todayStr = new Date().toISOString();
+      const newRowData = [...subRowData];
+      
       if (statusIdx > -1) {
-        const newRowData = [...subRowData];
         newRowData[statusIdx] = 'Done';
-        setActivity({ ...activity, status: 'Done' });
-        setSubRowData(newRowData);
-      } else {
-        setActivity({ ...activity, status: 'Done' });
       }
+      if (compDateIdx > -1) {
+        newRowData[compDateIdx] = todayStr;
+      }
+      
+      setSubRowData(newRowData);
+      setActivity({ 
+        ...activity, 
+        status: 'Done',
+        completeDate: todayStr
+      });
     } catch (err: any) {
       alert('Gagal menyelesaikan activity: ' + err.message);
     } finally {
@@ -746,6 +1177,7 @@ export function ActivityDetail() {
   }
 
   const dueInfo = getDueDaysLeft(activity.dueDate);
+  const isOrderBudgetClickable = !reviewTier || reviewTier.trim() === '' || reviewTier.trim().toLowerCase() === 'kosong';
 
   return (
     <div className="pb-24 bg-gray-50 min-h-screen relative">
@@ -766,7 +1198,7 @@ export function ActivityDetail() {
           <div className="mb-4">
             <div className="flex items-center justify-between mb-2">
               <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Deskripsi</span>
-              {!isEditingInstruction && (
+              {!isEditingInstruction && activity.status?.toUpperCase() !== 'DONE' && (
                 <button 
                   onClick={() => {
                     setTempInstruction(activity.instruction || '');
@@ -820,7 +1252,7 @@ export function ActivityDetail() {
             <span className={cn(
               "text-[10px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap",
               (() => {
-                const s = activity.status.toLowerCase();
+                const s = (activity?.status || '').toLowerCase();
                 if (s.includes('complete') || s.includes('done') || s.includes('selesai')) return "bg-green-100 text-green-700";
                 if (s.includes('cancel') || s.includes('batal')) return "bg-red-100 text-red-700";
                 if (s.includes('not started') || s.includes('belum mulai')) return "bg-slate-100 text-slate-700";
@@ -844,7 +1276,7 @@ export function ActivityDetail() {
                 {!isEditingExpense && <p className="text-lg font-bold text-gray-900">{formatIDR(activity.expense)}</p>}
               </div>
             </div>
-            {!isEditingExpense && (
+            {!isEditingExpense && activity.status?.toUpperCase() !== 'DONE' && (
               <button 
                 onClick={() => {
                   setTempAmount(activity.expense.toString());
@@ -899,10 +1331,18 @@ export function ActivityDetail() {
           <div className="flex items-center gap-3">
             <button
               onClick={() => {
-                setObAmount(activity.expense?.toString() || '0');
-                setShowOrderBudgetModal(true);
+                if (isOrderBudgetClickable) {
+                  setObAmount(activity.expense?.toString() || '0');
+                  setShowOrderBudgetModal(true);
+                }
               }}
-              className="bg-[#429dbb] hover:bg-[#35829c] text-white font-bold py-2.5 px-4 rounded-xl shadow-sm flex items-center gap-2 text-xs uppercase tracking-wider transition-all cursor-pointer"
+              disabled={!isOrderBudgetClickable}
+              className={cn(
+                "font-bold py-2.5 px-4 rounded-xl shadow-sm flex items-center gap-2 text-xs uppercase tracking-wider transition-all",
+                isOrderBudgetClickable 
+                  ? "bg-[#429dbb] hover:bg-[#35829c] text-white cursor-pointer" 
+                  : "bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200"
+              )}
             >
               <DollarSign className="w-4 h-4" />
               Order Budget
@@ -938,14 +1378,23 @@ export function ActivityDetail() {
               <p className="text-sm font-bold text-gray-900">{formatDateMMDDYY(activity.dueDate)}</p>
             </div>
           </div>
-          <div className={cn("text-xs font-semibold px-2.5 py-1 rounded-lg", dueInfo.isOverdue ? "bg-red-50 text-red-600" : "bg-green-50 text-green-600")}>
-             {dueInfo.days} {dueInfo.label}
+          <div className={cn(
+            "text-xs font-semibold px-2.5 py-1 rounded-lg", 
+            activity.status?.toUpperCase() === 'DONE' 
+              ? "bg-green-100 text-green-700" 
+              : (dueInfo.isOverdue ? "bg-red-50 text-red-600" : "bg-green-50 text-green-600")
+          )}>
+             {activity.status?.toUpperCase() === 'DONE' ? (
+               `Done @ ${formatCompleteDate(activity.completeDate || '')}`
+             ) : (
+               `${dueInfo.days} ${dueInfo.label}`
+             )}
           </div>
         </div>
 
         {/* Card 6: Assigned To */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 flex items-center gap-3">
-          <img src={activity.assignedTo.photo || undefined} alt="Assigned User" className="w-10 h-10 rounded-full object-cover border border-gray-200 shrink-0" />
+          <img src={formatImageUrl(activity.assignedTo.photo) || undefined} alt="Assigned User" className="w-10 h-10 rounded-full object-cover border border-gray-200 shrink-0" />
           <div className="flex flex-col justify-center">
             <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider mb-0.5">Assigned To</span>
             <span className="text-sm font-bold text-gray-900 leading-none">{activity.assignedTo.name}</span>
@@ -953,7 +1402,7 @@ export function ActivityDetail() {
         </div>
 
         {/* Card 7: Attached Document */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden mt-4">
           <div 
             className="p-4 border-b border-gray-100 flex items-center justify-between cursor-pointer hover:bg-gray-50 transition-colors"
             onClick={() => setExpandDocuments(!expandDocuments)}
@@ -974,20 +1423,19 @@ export function ActivityDetail() {
               >
                 <div className="p-4 bg-gray-50/50 space-y-3">
                   {activity.documents.length === 0 ? (
-                     <p className="text-center text-gray-500 text-sm py-2">Tidak ada dokumen.</p>
+                    <p className="text-center text-sm text-gray-500 py-2">No documents attached yet.</p>
                   ) : (
-                    activity.documents.map((doc: any) => {
-                      const typeLower = (doc.type || '').toLowerCase();
+                    activity.documents.map((doc: any, idx: number) => {
                       let DocIcon = FileText;
+                      const typeLower = (doc.type || '').toLowerCase();
                       if (typeLower.includes('photo') || typeLower.includes('image')) DocIcon = ImageIcon;
-                      else if (typeLower.includes('note')) DocIcon = StickyNote;
-                      else if (typeLower.includes('link')) DocIcon = LinkIcon;
-                      else if (typeLower.includes('file')) DocIcon = FileIcon;
+                      if (typeLower.includes('link')) DocIcon = LinkIcon;
+                      if (typeLower.includes('note')) DocIcon = StickyNote;
                       
                       return (
                         <div 
-                          key={doc.id} 
-                          className="flex items-center gap-3 p-3 bg-white rounded-xl border border-gray-100 shadow-sm cursor-pointer hover:bg-blue-50 transition-colors"
+                          key={`${doc.id}-${idx}`} 
+                          className="flex items-center gap-3 p-3 bg-white rounded-xl border border-gray-100 shadow-sm cursor-pointer hover:bg-blue-50/50 transition-colors"
                           onClick={() => setSelectedDoc(doc)}
                         >
                           {doc.timestamp && (
@@ -998,7 +1446,40 @@ export function ActivityDetail() {
                           <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
                             <DocIcon className="w-4 h-4" />
                           </div>
-                          <p className="text-sm font-medium text-gray-900 truncate flex-1">{doc.name}</p>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-gray-900 truncate">{doc.name}</p>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              {doc.type && (
+                                <span className="text-[10px] text-gray-400 font-medium px-1.5 py-0.5 bg-gray-50 rounded capitalize">
+                                  {doc.type}
+                                </span>
+                              )}
+                              {doc.isData && (
+                                <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded flex items-center gap-1">
+                                  <Database className="w-2.5 h-2.5" /> Data
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {!doc.isData ? (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDocToSaveAsData(doc);
+                              }}
+                              className="flex items-center gap-1.5 text-xs font-semibold text-blue-600 bg-blue-50 hover:bg-blue-100 border border-blue-200/80 px-2.5 py-1.5 rounded-lg transition active:scale-95 shrink-0"
+                              title="Simpan sebagai data"
+                            >
+                              <Database className="w-3.5 h-3.5" />
+                              <span>Simpan</span>
+                            </button>
+                          ) : (
+                            <span className="text-[11px] font-medium text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-100 shrink-0">
+                              Tersimpan
+                            </span>
+                          )}
                         </div>
                       );
                     })
@@ -1019,7 +1500,7 @@ export function ActivityDetail() {
         </button>
 
         {/* Card 9: Done Button */}
-        {activity.status.toLowerCase().includes('done') ? (
+        {(activity.status || '').toLowerCase().includes('done') ? (
           <div className="w-full bg-green-50 rounded-xl shadow-sm border border-green-200 p-4 flex items-center justify-center gap-2 text-green-700 font-bold mt-6">
             <CheckCircle2 className="w-6 h-6" />
             Activity has been Done
@@ -1162,11 +1643,29 @@ export function ActivityDetail() {
                   return <p className="text-sm text-gray-500 italic text-center py-8">Unsupported document type.</p>;
                 })()}
               </div>
-              <div className="p-4 bg-gray-50 border-t border-gray-100 flex items-center justify-center gap-2">
-                 <Clock className="w-4 h-4 text-gray-400" />
-                 <span className="text-xs text-gray-500 font-medium">
-                   {selectedDoc.timestamp ? new Date(selectedDoc.timestamp).toLocaleString() : 'No timestamp'}
-                 </span>
+              <div className="p-4 bg-gray-50 border-t border-gray-100 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 text-xs text-gray-500 font-medium">
+                  <Clock className="w-4 h-4 text-gray-400" />
+                  <span>
+                    {selectedDoc.timestamp ? new Date(selectedDoc.timestamp).toLocaleString() : 'No timestamp'}
+                  </span>
+                </div>
+                {!selectedDoc.isData ? (
+                  <button
+                    type="button"
+                    onClick={() => setDocToSaveAsData(selectedDoc)}
+                    className="flex items-center gap-1.5 text-xs font-semibold text-blue-600 bg-blue-50 hover:bg-blue-100 border border-blue-200 px-3 py-1.5 rounded-lg transition active:scale-95 shrink-0"
+                    title="Simpan sebagai data"
+                  >
+                    <Database className="w-3.5 h-3.5" />
+                    <span>Simpan sebagai Data</span>
+                  </button>
+                ) : (
+                  <span className="flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg shrink-0">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Tersimpan sebagai Data</span>
+                  </span>
+                )}
               </div>
             </motion.div>
           </div>
@@ -1225,7 +1724,7 @@ export function ActivityDetail() {
             <motion.div 
               initial={{ opacity: 0, scale: 0.95 }} 
               animate={{ opacity: 1, scale: 1 }} 
-              exit={{ opacity: 0, scale: 0.95 }}
+              exit={{ opacity: 0, scale: 0.95 }} 
               transition={{ duration: 0.2 }}
               className="relative w-full max-w-sm bg-white rounded-3xl shadow-2xl overflow-hidden z-10 flex flex-col max-h-[90vh]"
             >
@@ -1363,19 +1862,17 @@ export function ActivityDetail() {
                         </div>
                       )}
 
-                      {addDocType === 'Note' && (
-                        <div>
-                          <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Note Content</label>
-                          <textarea
-                            value={addDocNote}
-                            onChange={(e) => setAddDocNote(e.target.value)}
-                            placeholder="Type your notes here..."
-                            rows={4}
-                            disabled={isUploadingDok}
-                            className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 resize-none disabled:opacity-50"
-                          />
-                        </div>
-                      )}
+                      <div className="pt-2">
+                        <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">Note / Catatan (Optional)</label>
+                        <textarea
+                          value={addDocNote}
+                          onChange={(e) => setAddDocNote(e.target.value)}
+                          placeholder="Type your notes here..."
+                          rows={3}
+                          disabled={isUploadingDok}
+                          className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 resize-none disabled:opacity-50"
+                        />
+                      </div>
                       
                       {/* Additional spacing at the end if needed */}
                     </motion.div>
@@ -1383,7 +1880,7 @@ export function ActivityDetail() {
                 </AnimatePresence>
                 
                 <button
-                  onClick={handleAddDocumentSubmit}
+                  onClick={() => handleAddDocumentSubmit(false)}
                   disabled={!addDocTitle.trim() || !addDocType || isUploadingDok || (addDocType === 'Photo' && !addDocFile) || (addDocType === 'File' && !addDocFile) || (addDocType === 'Link' && !addDocLink) || (addDocType === 'Note' && !addDocNote)}
                   className="w-full bg-blue-600 text-white font-bold rounded-xl py-3.5 shadow-sm hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 mt-4"
                 >
@@ -1397,6 +1894,70 @@ export function ActivityDetail() {
                       <CheckCircle2 className="w-5 h-5" />
                       Save {addDocType === 'Photo' ? 'Photo' : 'Document'}
                     </>
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Modal Konfirmasi Simpan Sebagai Data */}
+      <AnimatePresence>
+        {docToSaveAsData && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }} 
+              animate={{ opacity: 1 }} 
+              exit={{ opacity: 0 }} 
+              className="absolute inset-0 bg-black/40 backdrop-blur-xs"
+              onClick={() => {
+                if (!isSavingDocData) setDocToSaveAsData(null);
+              }}
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 10 }} 
+              animate={{ opacity: 1, scale: 1, y: 0 }} 
+              exit={{ opacity: 0, scale: 0.95, y: 10 }} 
+              transition={{ duration: 0.2 }}
+              className="relative w-full max-w-sm bg-white rounded-3xl shadow-2xl p-6 text-center space-y-5 z-10"
+            >
+              <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mx-auto shadow-inner">
+                <Database className="w-8 h-8" />
+              </div>
+              <div className="space-y-2">
+                <h4 className="font-bold text-gray-900 text-lg">Simpan sebagai data?</h4>
+                <p className="text-sm text-gray-500 max-w-[260px] mx-auto">
+                  Apakah Anda ingin menyimpan dokumen ini sebagai data (nilai TRUE pada kolom DATA)?
+                </p>
+                {docToSaveAsData.name && (
+                  <p className="text-xs font-medium text-gray-700 bg-gray-50 px-3 py-1.5 rounded-lg border border-gray-200 truncate">
+                    {docToSaveAsData.name}
+                  </p>
+                )}
+              </div>
+              <div className="flex gap-3 w-full">
+                <button
+                  type="button"
+                  disabled={isSavingDocData}
+                  onClick={() => setDocToSaveAsData(null)}
+                  className="flex-1 py-3 border border-gray-200 text-gray-700 rounded-xl font-semibold hover:bg-gray-50 transition active:scale-[0.98] disabled:opacity-50"
+                >
+                  Tidak
+                </button>
+                <button
+                  type="button"
+                  disabled={isSavingDocData}
+                  onClick={() => handleSaveDocAsData(docToSaveAsData)}
+                  className="flex-1 py-3 bg-blue-600 text-white rounded-xl font-semibold hover:bg-blue-700 transition shadow-sm active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {isSavingDocData ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Menyimpan...</span>
+                    </>
+                  ) : (
+                    'Iya'
                   )}
                 </button>
               </div>
@@ -1441,177 +2002,159 @@ export function ActivityDetail() {
               </div>
 
               <form onSubmit={handleOrderBudgetSubmit} className="p-5 overflow-y-auto space-y-4 flex-1">
-                {/* Order Type Select */}
+                {/* Order type */}
                 <div>
-                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
-                    Order Type
+                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
+                    Order type <span className="text-red-500">*</span>
                   </label>
-                  <select
-                    value={obType}
-                    onChange={(e) => {
-                      setObType(e.target.value);
-                      // Reset conditional states
-                      setObVendorId('');
-                      setObTallentId('');
-                      setObVia('');
-                      setObBank('');
-                    }}
-                    required
-                    disabled={isSubmittingOrder}
-                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 disabled:opacity-50 font-medium"
-                  >
-                    <option value="">-- Pilih Type --</option>
-                    <option value="Vendor">Vendor</option>
-                    <option value="Tallent">Tallent</option>
-                    <option value="Reimburse">Reimburse</option>
-                    <option value="Operasional">Operasional</option>
-                  </select>
+                  <div className="grid grid-cols-2 gap-2">
+                    {['Vendor', 'Tallent', 'Reimburse', 'Operational'].map(opt => (
+                      <button
+                        key={opt}
+                        type="button"
+                        onClick={() => setObOrderType(opt)}
+                        disabled={isSubmittingOrder}
+                        className={cn(
+                          "py-2.5 px-3 text-xs font-bold rounded-xl border transition-all text-center cursor-pointer",
+                          obOrderType === opt
+                            ? "bg-blue-600 border-blue-600 text-white shadow-sm"
+                            : "bg-gray-50/50 border-gray-200 text-gray-600 hover:bg-gray-50"
+                        )}
+                      >
+                        {opt}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
-                {/* Conditional dropdown: Vendor */}
-                {obType === 'Vendor' && (
-                  <div>
-                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
-                      Vendor Contact
-                    </label>
-                    <select
-                      value={obVendorId}
-                      onChange={(e) => setObVendorId(e.target.value)}
-                      required
+                {/* Nota Belanja (Only for Reimburse or Operational) */}
+                {(obOrderType === 'Reimburse' || obOrderType === 'Operational') && (
+                  <div className="mb-4">
+                    <OrderBudgetNotaUploader
+                      files={obNotaFiles}
+                      onChangeFiles={setObNotaFiles}
                       disabled={isSubmittingOrder}
-                      className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 disabled:opacity-50 font-medium"
-                    >
-                      <option value="">-- Pilih Vendor --</option>
-                      {contacts.filter(c => c.type?.trim().toLowerCase() === 'vendor').map(c => (
-                        <option key={c.id} value={c.id}>{c.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-
-                {/* Conditional dropdown: Tallent */}
-                {obType === 'Tallent' && (
-                  <div>
-                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
-                      Tallent Contact
-                    </label>
-                    <select
-                      value={obTallentId}
-                      onChange={(e) => setObTallentId(e.target.value)}
-                      required
-                      disabled={isSubmittingOrder}
-                      className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 disabled:opacity-50 font-medium"
-                    >
-                      <option value="">-- Pilih Tallent --</option>
-                      {contacts.filter(c => c.type?.trim().toLowerCase() === 'tallent' || c.type?.trim().toLowerCase() === 'talent').map(c => (
-                        <option key={c.id} value={c.id}>{c.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-
-                {/* Conditional file upload: Reimburse */}
-                {obType === 'Reimburse' && (
-                  <div className="p-3 bg-gray-50/50 rounded-2xl border border-gray-100 flex flex-col gap-3">
-                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">
-                      Bukti Nota
-                    </label>
-                    <input
-                      type="file"
-                      accept="image/*,application/pdf"
-                      ref={obNotaFileInputRef}
-                      onChange={(e) => {
-                        if (e.target.files && e.target.files.length > 0) {
-                          setObNotaFile(e.target.files[0]);
-                        }
-                      }}
-                      className="hidden"
                     />
-                    <div 
-                      onClick={() => {
-                        if (!isSubmittingOrder) obNotaFileInputRef.current?.click();
-                      }}
-                      className="flex flex-col items-center justify-center border-2 border-gray-300 border-dashed rounded-xl p-4 cursor-pointer bg-white hover:bg-gray-50 transition relative overflow-hidden"
-                    >
-                      {obNotaFile ? (
-                        <div className="text-center">
-                          {obNotaFile.type.startsWith('image/') ? (
-                            <img src={URL.createObjectURL(obNotaFile)} alt="Nota preview" className="w-full h-auto max-h-32 object-contain rounded-lg mx-auto mb-2" />
-                          ) : (
-                            <FileIcon className="w-12 h-12 text-gray-400 mx-auto mb-2" />
-                          )}
-                          <p className="text-xs font-semibold text-gray-900 truncate max-w-[200px]">{obNotaFile.name}</p>
-                          <p className="text-[10px] text-gray-400 mt-0.5">Ketuk untuk mengganti</p>
-                        </div>
-                      ) : (
-                        <div className="flex flex-col items-center justify-center text-center">
-                          <ImageIcon className="w-8 h-8 text-gray-400 mb-1" />
-                          <p className="text-sm text-gray-600 font-bold">Pilih File / Ambil Foto Nota</p>
-                          <p className="text-[10px] text-gray-400 mt-0.5">Upload file atau ambil foto nota belanja</p>
-                        </div>
-                      )}
-                    </div>
                   </div>
                 )}
 
-                {/* Order Type selected options (Amount and VIA) */}
-                {obType && (
-                  <>
-                    {/* Amount Field */}
-                    <div>
-                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
-                        Amount
-                      </label>
-                      <div className="relative">
-                        <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center text-sm font-bold text-gray-500">Rp</span>
-                        <input
-                          type="number"
-                          value={obAmount}
-                          onChange={(e) => setObAmount(e.target.value)}
-                          placeholder={activity.expense ? activity.expense.toString() : '0'}
-                          disabled={isSubmittingOrder}
-                          className="w-full bg-gray-50 border border-gray-200 rounded-xl pl-10 pr-4 py-3 text-sm font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 disabled:opacity-50"
-                        />
-                      </div>
-                    </div>
+                {/* Kepada */}
+                <div>
+                  <div className="flex justify-between items-center mb-1.5">
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider">
+                      Kepada <span className="text-red-500">*</span>
+                    </label>
+                    {obOrderType === 'Vendor' && (
+                      <button
+                        type="button"
+                        onClick={() => setShowAddVendorModal(true)}
+                        className="text-xs font-bold text-blue-600 hover:text-blue-800 flex items-center"
+                      >
+                        <Plus className="w-3.5 h-3.5 mr-1" /> Tambah vendor
+                      </button>
+                    )}
+                    {obOrderType === 'Tallent' && (
+                      <button
+                        type="button"
+                        onClick={() => setShowAddTallentModal(true)}
+                        className="text-xs font-bold text-blue-600 hover:text-blue-800 flex items-center"
+                      >
+                        <Plus className="w-3.5 h-3.5 mr-1" /> Tambah tallent
+                      </button>
+                    )}
+                  </div>
+                  {obOrderType === 'Vendor' ? (
+                    <select
+                      required
+                      value={obKepada}
+                      onChange={(e) => setObKepada(e.target.value)}
+                      disabled={isSubmittingOrder}
+                      className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 disabled:opacity-50 font-medium"
+                    >
+                      <option value="">Pilih Vendor</option>
+                      {vendorList.map((v, i) => (
+                        <option key={`vendor-${i}`} value={v.name}>{v.name}</option>
+                      ))}
+                    </select>
+                  ) : obOrderType === 'Tallent' ? (
+                    <select
+                      required
+                      value={obKepada}
+                      onChange={(e) => setObKepada(e.target.value)}
+                      disabled={isSubmittingOrder}
+                      className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 disabled:opacity-50 font-medium"
+                    >
+                      <option value="">Pilih Tallent</option>
+                      {tallentList.map((t, i) => (
+                        <option key={`tallent-${i}`} value={t.name}>{t.name}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      required
+                      type="text"
+                      placeholder="Masukkan nama penerima / Kepada"
+                      value={obKepada}
+                      onChange={(e) => setObKepada(e.target.value)}
+                      disabled={isSubmittingOrder}
+                      className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 disabled:opacity-50 font-medium"
+                    />
+                  )}
+                </div>
 
-                    {/* VIA inline choices */}
-                    <div>
-                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
-                        VIA Pembayaran
-                      </label>
-                      <div className="grid grid-cols-3 gap-2">
-                        {['Transfer', 'Cash', 'Qris', 'Ewallet', 'Virtual Akun'].map(opt => (
-                          <button
-                            key={opt}
-                            type="button"
-                            onClick={() => {
-                              setObVia(opt);
-                              // Reset suboptions
-                              setObBank('');
-                              setObRekNo('');
-                              setObAtasNama('');
-                              setObBerita('');
-                              setObNote('');
-                              setObQrisFile(null);
-                              setObEwalletName('');
-                              setObEwalletNo('');
-                              setObVirtualNo('');
-                            }}
-                            className={cn(
-                              "py-2 px-1 text-[11px] font-bold rounded-xl border transition-all text-center cursor-pointer",
-                              obVia === opt
-                                ? "bg-blue-600 border-blue-600 text-white shadow-sm"
-                                : "bg-gray-50/50 border-gray-200 text-gray-600 hover:bg-gray-50"
-                            )}
-                          >
-                            {opt}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </>
-                )}
+                {/* Amount Field */}
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                    Amount
+                  </label>
+                  <div className="relative">
+                    <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center text-sm font-bold text-gray-500">Rp</span>
+                    <input
+                      type="number"
+                      value={obAmount}
+                      onChange={(e) => setObAmount(e.target.value)}
+                      placeholder={activity.expense ? activity.expense.toString() : '0'}
+                      disabled={isSubmittingOrder}
+                      className="w-full bg-gray-50 border border-gray-200 rounded-xl pl-10 pr-4 py-3 text-sm font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 disabled:opacity-50"
+                    />
+                  </div>
+                </div>
+
+                {/* VIA inline choices */}
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                    VIA Pembayaran
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {['Transfer', 'Cash', 'Qris', 'Ewallet', 'Virtual Akun'].map(opt => (
+                      <button
+                        key={opt}
+                        type="button"
+                        onClick={() => {
+                          setObVia(opt);
+                          // Reset suboptions
+                          setObBank('');
+                          setObRekNo('');
+                          setObAtasNama('');
+                          setObBerita('');
+                          setObNote('');
+                          setObQrisFile(null);
+                          setObEwalletName('');
+                          setObEwalletNo('');
+                          setObVirtualNo('');
+                        }}
+                        className={cn(
+                          "py-2 px-1 text-[11px] font-bold rounded-xl border transition-all text-center cursor-pointer",
+                          obVia === opt
+                            ? "bg-blue-600 border-blue-600 text-white shadow-sm"
+                            : "bg-gray-50/50 border-gray-200 text-gray-600 hover:bg-gray-50"
+                        )}
+                      >
+                        {opt}
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
                 {/* Conditionally rendered sub-fields based on VIA selection */}
                 {obVia === 'Transfer' && (
@@ -1825,12 +2368,11 @@ export function ActivityDetail() {
                   type="submit"
                   disabled={
                     isSubmittingOrder || 
-                    !obType || 
-                    (obType === 'Vendor' && !obVendorId) || 
-                    (obType === 'Tallent' && !obTallentId) || 
-                    (obType === 'Reimburse' && !obNotaFile) || 
+                    !obOrderType || 
+                    !obKepada || 
                     !obAmount || 
                     !obVia || 
+                    ((obOrderType === 'Reimburse' || obOrderType === 'Operational') && obNotaFiles.length === 0) ||
                     (obVia === 'Transfer' && (!obBank || !obRekNo || !obAtasNama)) || 
                     (obVia === 'Cash' && !obNote) || 
                     (obVia === 'Qris' && !obQrisFile) || 
@@ -1852,6 +2394,164 @@ export function ActivityDetail() {
                   )}
                 </button>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Tambah Contact Modal */}
+      <AnimatePresence>
+        {(showAddVendorModal || showAddTallentModal) && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }} 
+              animate={{ opacity: 1 }} 
+              exit={{ opacity: 0 }} 
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+              onClick={() => {
+                if (!isSubmittingContact) {
+                  setShowAddVendorModal(false);
+                  setShowAddTallentModal(false);
+                }
+              }}
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }} 
+              animate={{ opacity: 1, scale: 1 }} 
+              exit={{ opacity: 0, scale: 0.95 }} 
+              className="relative bg-white rounded-3xl shadow-xl w-full max-w-sm overflow-hidden flex flex-col max-h-[90vh]"
+            >
+              <div className="p-5 border-b border-gray-100 flex items-center justify-between bg-white shrink-0">
+                <h3 className="text-lg font-bold text-gray-900">Tambah {showAddVendorModal ? 'Vendor' : 'Tallent'} Baru</h3>
+                <button
+                  onClick={() => {
+                    setShowAddVendorModal(false);
+                    setShowAddTallentModal(false);
+                  }}
+                  disabled={isSubmittingContact}
+                  className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors disabled:opacity-50"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-5 overflow-y-auto min-h-0 custom-scrollbar">
+                <form id="addContactForm" onSubmit={(e) => handleAddContact(e, showAddVendorModal ? 'Vendor' : 'Tallent')} className="space-y-4">
+                  {/* Name */}
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                      Nama <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      required
+                      type="text"
+                      placeholder={`Masukkan nama ${showAddVendorModal ? 'vendor' : 'tallent'}`}
+                      value={newContactName}
+                      onChange={(e) => setNewContactName(e.target.value)}
+                      disabled={isSubmittingContact}
+                      className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 disabled:opacity-50 font-medium"
+                    />
+                  </div>
+
+                  {/* Email */}
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                      Email
+                    </label>
+                    <input
+                      type="email"
+                      placeholder={`Email ${showAddVendorModal ? 'vendor' : 'tallent'}`}
+                      value={newContactEmail}
+                      onChange={(e) => setNewContactEmail(e.target.value)}
+                      disabled={isSubmittingContact}
+                      className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 disabled:opacity-50 font-medium"
+                    />
+                  </div>
+
+                  {/* Phone */}
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                      Phone
+                    </label>
+                    <input
+                      type="tel"
+                      placeholder={`Nomor telepon ${showAddVendorModal ? 'vendor' : 'tallent'}`}
+                      value={newContactPhone}
+                      onChange={(e) => setNewContactPhone(e.target.value)}
+                      disabled={isSubmittingContact}
+                      className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 disabled:opacity-50 font-medium"
+                    />
+                  </div>
+
+                  {/* Usecase */}
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                      Usecase <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      required
+                      type="text"
+                      placeholder={`Usecase (misal: ${showAddVendorModal ? 'Vendor Transport' : 'Actor'})`}
+                      value={newContactUsecase}
+                      onChange={(e) => setNewContactUsecase(e.target.value)}
+                      disabled={isSubmittingContact}
+                      className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 disabled:opacity-50 font-medium"
+                    />
+                  </div>
+
+                  {/* Alamat */}
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                      Alamat
+                    </label>
+                    <textarea
+                      placeholder={`Alamat lengkap ${showAddVendorModal ? 'vendor' : 'tallent'}`}
+                      value={newContactAddress}
+                      onChange={(e) => setNewContactAddress(e.target.value)}
+                      disabled={isSubmittingContact}
+                      rows={3}
+                      className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 disabled:opacity-50 font-medium resize-none"
+                    />
+                  </div>
+
+                  {/* Website */}
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                      Website <span className="text-gray-400 normal-case font-normal">(Optional)</span>
+                    </label>
+                    <input
+                      type="url"
+                      placeholder="https://..."
+                      value={newContactWebsite}
+                      onChange={(e) => setNewContactWebsite(e.target.value)}
+                      disabled={isSubmittingContact}
+                      className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 disabled:opacity-50 font-medium"
+                    />
+                  </div>
+
+                </form>
+              </div>
+
+              <div className="p-5 border-t border-gray-100 bg-white shrink-0 mt-auto">
+                <button
+                  type="submit"
+                  form="addContactForm"
+                  disabled={isSubmittingContact || !newContactName || !newContactUsecase}
+                  className="w-full bg-blue-600 text-white font-bold rounded-xl py-3.5 shadow-sm hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {isSubmittingContact ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      Menyimpan...
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-5 h-5" />
+                      Tambah {showAddVendorModal ? 'Vendor' : 'Tallent'}
+                    </>
+                  )}
+                </button>
+              </div>
             </motion.div>
           </div>
         )}

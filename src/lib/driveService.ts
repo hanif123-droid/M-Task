@@ -1,64 +1,117 @@
-const DRIVE_FOLDER_ID = '1_JsXFbHDqsoLO1Mxse1kLiptmtcHCiOF';
-const APPROPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbytmdIdahbQ4y354eHa7m0F84bmKo9AxEYFHXATG8uIeRYQZB11b-GO7v4Tr43Ysi-P8w/exec';
+import { supabase } from './supabaseAuth';
 
 export class DriveService {
   /**
-   * Uploads a file to the specific Google Drive folder using Google Apps Script.
+   * Uploads a file to Supabase Storage. (Previously Google Drive)
    * @param file The file to upload.
    * @returns Information about the uploaded file.
    */
   static async uploadFile(file: File): Promise<{ id: string, url: string }> {
+    try {
+      // 1. If it's an image and larger than 1MB, try to compress it
+      let fileToUpload = file;
+      if (file.type.startsWith('image/') && file.size > 1024 * 1024) {
+        try {
+          fileToUpload = await this.compressImage(file);
+        } catch (compressError) {
+          console.warn("Image compression failed, uploading original:", compressError);
+        }
+      }
+
+      // 2. Check size again after potential compression
+      if (fileToUpload.size > 5 * 1024 * 1024) { // 5MB generic safeguard, though Supabase limit might be lower
+        console.warn(`File ${fileToUpload.name} is quite large: ${(fileToUpload.size / 1024 / 1024).toFixed(2)}MB`);
+      }
+
+      const timestamp = new Date().getTime();
+      const uniqueFileName = `${timestamp}_${fileToUpload.name.replace(/\s+/g, '_')}`;
+
+      let bucketName = 'dokumen-aset';
+      
+      let uploadResult = await supabase.storage
+        .from('dokumen-aset')
+        .upload(uniqueFileName, fileToUpload);
+
+      if (uploadResult.error) {
+        // Fallback to Mtask
+        uploadResult = await supabase.storage.from('Mtask').upload(uniqueFileName, fileToUpload);
+        if (uploadResult.error) {
+          if (uploadResult.error.message.includes('exceeded the maximum allowed size')) {
+            throw new Error(`Ukuran file terlalu besar. Maksimal yang diizinkan adalah 1MB - 5MB (tergantung pengaturan server). Silakan perkecil ukuran file atau kompres gambar sebelum upload.`);
+          }
+          throw new Error(`Upload failed: ${uploadResult.error.message}`);
+        }
+        bucketName = 'Mtask';
+      }
+
+      const { data: pathData } = supabase.storage
+        .from(bucketName)
+        .getPublicUrl(uniqueFileName);
+
+      return { id: uniqueFileName, url: pathData.publicUrl };
+
+    } catch (e: any) {
+      console.error("Failed to upload to Supabase:", e);
+      throw new Error(e.message.startsWith('Ukuran file') ? e.message : `Failed to upload to Supabase: ${e.message}`);
+    }
+  }
+
+  /**
+   * Simple client-side image compression using Canvas
+   */
+  private static async compressImage(file: File): Promise<File> {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onloadend = async () => {
-        try {
-          const resultStr = reader.result as string;
-          const base64Data = resultStr.includes(',') ? resultStr.split(',')[1] : resultStr;
-          
-          const payload = {
-            action: 'UPLOAD_FILE',
-            folderId: DRIVE_FOLDER_ID,
-            filename: file.name,
-            mimeType: file.type || 'application/octet-stream',
-            base64Data: base64Data
-          };
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.src = event.target?.result as string;
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
 
-          try {
-            // Use mode: 'no-cors' so the browser doesn't throw a cross-origin 'Failed to fetch' error
-            // when the Google Apps Script doesn't return CORS headers.
-            const res = await fetch(APPROPS_SCRIPT_URL, {
-              method: 'POST',
-              mode: 'no-cors',
-              headers: {
-                'Content-Type': 'text/plain',
-              },
-              redirect: 'follow',
-              body: JSON.stringify(payload)
-            });
-            
-            // With 'no-cors', res.ok is false, and we can't read res.text().
-            // We just assume success if it didn't throw a network error.
-            
-            const finalId = `upload_${Date.now()}`;
-            const finalUrl = `https://drive.google.com/drive/folders/${DRIVE_FOLDER_ID}`;
-            
-            resolve({ id: finalId, url: finalUrl });
+          // Max dimensions (e.g., 1920px)
+          const MAX_WIDTH = 1920;
+          const MAX_HEIGHT = 1920;
 
-          } catch (fetchErr: any) {
-            console.error("Fetch to Apps Script failed, could be CORS issue:", fetchErr);
-            // Fallback: If it's a CORS error, sometimes the upload itself still succeeds on the backend.
-            // We just reject so the UI doesn't hang indefinitely, OR we resolve with unknown.
-            reject(new Error(`Failed to fetch from Apps Script: ${fetchErr.message}. Ensure the script is deployed as web app accessible to "Anyone".`));
+          if (width > height) {
+            if (width > MAX_WIDTH) {
+              height *= MAX_WIDTH / width;
+              width = MAX_WIDTH;
+            }
+          } else {
+            if (height > MAX_HEIGHT) {
+              width *= MAX_HEIGHT / height;
+              height = MAX_HEIGHT;
+            }
           }
 
-        } catch (e) {
-          reject(e);
-        }
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx?.drawImage(img, 0, 0, width, height);
+
+          // Compress to JPEG with 0.7 quality
+          canvas.toBlob(
+            (blob) => {
+              if (blob) {
+                const compressedFile = new File([blob], file.name, {
+                  type: 'image/jpeg',
+                  lastModified: Date.now(),
+                });
+                resolve(compressedFile);
+              } else {
+                reject(new Error("Canvas toBlob failed"));
+              }
+            },
+            'image/jpeg',
+            0.7
+          );
+        };
+        img.onerror = (err) => reject(err);
       };
-      reader.onerror = () => reject(new Error('Failed to read file locally before upload.'));
-      reader.readAsDataURL(file);
+      reader.onerror = (err) => reject(err);
     });
   }
 }
-
-

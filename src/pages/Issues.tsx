@@ -1,530 +1,329 @@
 import { useState, useEffect } from 'react';
-import { 
-  ArrowLeft, Search, Loader2, AlertCircle, Calendar, 
-  User, Image as ImageIcon, FileText, Link as LinkIcon, 
-  MapPin, ShieldAlert, X, ExternalLink, Bookmark, Filter
-} from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { ArrowLeft, Search, X, Loader2, RefreshCw, AlertTriangle, AlertCircle, MapPin, Filter } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { cn } from '../lib/utils';
+import { cn, formatImageUrl } from '../lib/utils';
 import { getSheetData } from '../lib/api';
-
-interface IssueItem {
-  timestamp: string;
-  unitId: string;
-  unitName: string;
-  unitLogo: string;
-  info: string;
-  note: string;
-  image01: string;
-  file01: string;
-  url01: string;
-  status: string;
-  titleDok: string;
-}
-
-const ubahKeDirectLink = (urlDrive: string) => {
-  if (!urlDrive) return '';
-  const matchD = urlDrive.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
-  const matchId = urlDrive.match(/id=([a-zA-Z0-9_-]+)/);
-  const fileId = matchD ? matchD[1] : (matchId ? matchId[1] : null);
-  
-  if (fileId) {
-    return `https://drive.google.com/thumbnail?id=${fileId}&sz=w1000`;
-  }
-  return urlDrive;
-};
 
 export function Issues() {
   const navigate = useNavigate();
-  const [search, setSearch] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [issues, setIssues] = useState<IssueItem[]>([]);
-  const [selectedIssue, setSelectedIssue] = useState<IssueItem | null>(null);
-  const [statusFilter, setStatusFilter] = useState<string>('ALL');
-  const [unitFilter, setUnitFilter] = useState<string>(''); // empty means All
-  const [showFilter, setShowFilter] = useState(false);
+  const [searchParams] = useSearchParams();
+  const initialSearch = searchParams.get('q') || searchParams.get('search') || '';
+  const [search, setSearch] = useState(initialSearch);
 
   useEffect(() => {
-    async function fetchData() {
-      try {
-        setIsLoading(true);
+    const q = searchParams.get('q') || searchParams.get('search');
+    if (q) {
+      setSearch(q);
+    }
+  }, [searchParams]);
+  const [issues, setIssues] = useState<any[]>([]);
+  const [units, setUnits] = useState<any[]>([]);
+  const [users, setUsers] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-        // 1. Fetch Units Map
-        const unitMap = new Map<string, { name: string; logo: string }>();
-        const unitRes = await getSheetData('Unit!A1:Z500').catch(() => null);
-        if (unitRes?.values?.length > 0) {
-          const headers = unitRes.values[0] as string[];
-          const idIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'ID');
-          const nameIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'UNIT NAME');
-          const logoIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'LOGO' || h?.trim().toUpperCase() === 'IMAGE');
-          
-          if (idIdx > -1) {
-            unitRes.values.slice(1).forEach((row: any[]) => {
-              const uId = row[idIdx]?.trim() || '';
-              if (uId) {
-                unitMap.set(uId.toUpperCase(), {
-                  name: nameIdx > -1 ? (row[nameIdx] || uId) : uId,
-                  logo: logoIdx > -1 ? (row[logoIdx] || '') : '',
-                });
-              }
+  const [selectedUnitFilter, setSelectedUnitFilter] = useState<string>('ALL');
+  const [selectedStatusFilter, setSelectedStatusFilter] = useState<string>('ALL');
+  const [showFilter, setShowFilter] = useState(false);
+
+  const fetchData = async () => {
+    try {
+      setIsLoading(true);
+      setError(null);
+      
+      const [issueRes1, issueRes2, unitRes, userRes] = await Promise.all([
+        getSheetData('ISSUE!A1:Z1000').catch(() => null),
+        getSheetData('Issue!A1:Z1000').catch(() => null),
+        getSheetData('Unit!A1:Z500').catch(() => null),
+        getSheetData('User!A1:Z1000').catch(() => null)
+      ]);
+
+      // Parse Units
+      const unitMap = new Map<string, { name: string; logo: string }>();
+      const parsedUnits: any[] = [];
+      if (unitRes?.values?.length > 0) {
+        const headers = unitRes.values[0] as string[];
+        const idIdx = headers.findIndex(h => (h || '').trim().toUpperCase() === 'ID' || (h || '').trim().toUpperCase() === 'UNIT ID');
+        const nameIdx = headers.findIndex(h => (h || '').trim().toUpperCase() === 'UNIT NAME');
+        const logoIdx = headers.findIndex(h => (h || '').trim().toUpperCase() === 'LOGO' || (h || '').trim().toUpperCase() === 'IMAGE');
+        
+        unitRes.values.slice(1).forEach((row: any[]) => {
+          const id = idIdx > -1 ? row[idIdx]?.trim() : '';
+          const name = nameIdx > -1 ? row[nameIdx]?.trim() : id;
+          const logo = logoIdx > -1 ? row[logoIdx]?.trim() : '';
+          if (id) {
+            const unitInfo = { name: name || id, logo: logo || '' };
+            unitMap.set(id, unitInfo);
+            unitMap.set(name, unitInfo); // key by both ID and Name for safer matching
+            parsedUnits.push({ id, name, logo });
+          }
+        });
+      }
+      setUnits(parsedUnits);
+
+      // Parse Users
+      const userMap = new Map<string, { name: string; avatar: string }>();
+      if (userRes?.values?.length > 0) {
+        const headers = userRes.values[0] as string[];
+        const emailIdx = headers.findIndex(h => (h || '').trim().toUpperCase() === 'EMAIL');
+        const nameIdx = headers.findIndex(h => (h || '').trim().toUpperCase() === 'NAME');
+        const avatarIdx = headers.findIndex(h => (h || '').trim().toUpperCase() === 'AVATAR' || (h || '').trim().toUpperCase() === 'PHOTO');
+        
+        userRes.values.slice(1).forEach((row: any[]) => {
+          const email = emailIdx > -1 ? row[emailIdx]?.trim() : '';
+          const name = nameIdx > -1 ? row[nameIdx]?.trim() : '';
+          const avatar = avatarIdx > -1 ? row[avatarIdx]?.trim() : '';
+          if (email) {
+            userMap.set(email.toLowerCase(), {
+              name: name || email.split('@')[0],
+              avatar: formatImageUrl(avatar) || `https://ui-avatars.com/api/?name=${encodeURIComponent(name || email)}&background=f0f9ff&color=0284c7`
             });
           }
-        }
+        });
+      }
 
-        // 2. Fetch Dok Sub Task
-        let dokRes = await getSheetData('Dok Sub Task!A1:Z3000').catch(() => null);
-        if (!dokRes || !dokRes.values) {
-          dokRes = await getSheetData('Dok Subtask!A1:Z3000').catch(() => null);
-        }
+      // Parse Issues
+      const issueRes = issueRes1?.values ? issueRes1 : issueRes2;
+      if (issueRes?.values && issueRes.values.length > 0) {
+        const headers = issueRes.values[0] as string[];
+        const valueRows = issueRes.values.slice(1) as string[][];
 
-        if (dokRes?.values?.length > 0) {
-          const headers = dokRes.values[0] as string[];
+        const getColIndex = (headerName: string) => {
+          const normName = headerName.trim().toUpperCase().replace(/[\s._-]+/g, '');
+          return headers.findIndex(h => {
+            if (!h) return false;
+            const normH = h.trim().toUpperCase().replace(/[\s._-]+/g, '');
+            if (normH === normName) return true;
+            if (normName === 'ISSUEID' && (normH === 'ISSUEID' || normH === 'ISSUE_ID' || normH === 'ID')) return true;
+            if (normName === 'TIMESTAMP' && (normH === 'TIMESTAMP' || normH === 'TIME')) return true;
+            if (normName === 'USER' && (normH === 'USER' || normH === 'EMAIL' || normH === 'PELAPOR')) return true;
+            if (normName === 'UNIT' && (normH === 'UNIT' || normH === 'UNIT_NAME' || normH === 'UNITNAME')) return true;
+            if (normName === 'KETERANGAN' && (normH === 'KETERANGAN' || normH === 'ISSUE' || normH === 'DETAIL' || normH === 'NOTE' || normH === 'INFO')) return true;
+            if (normName === 'STATUS' && (normH === 'STATUS')) return true;
+            if (normName === 'LAMPIRAN' && (normH === 'LAMPIRAN' || normH === 'TIPE' || normH === 'ATTACHMENT')) return true;
+            if (normName === 'CATATAN' && (normH === 'CATATAN' || normH === 'VALUE' || normH === 'ATTACHMENT_VALUE')) return true;
+            if (normName === 'LAMPIRAN2' && (normH === 'LAMPIRAN2' || normH === 'LAMPIRAN_2' || normH === 'TIPE2')) return true;
+            if (normName === 'CATATAN2' && (normH === 'CATATAN2' || normH === 'CATATAN_2' || normH === 'VALUE2')) return true;
+            if (normName === 'LOKASI' && (normH === 'LOKASI' || normH === 'LOCATION' || normH === 'COORDINATES')) return true;
+            return false;
+          });
+        };
+
+        const issueIdIdx = getColIndex('issue_id');
+        const timestampIdx = getColIndex('Timestamp');
+        const userIdx = getColIndex('user');
+        const unitIdx = getColIndex('Unit');
+        const keteranganIdx = getColIndex('keterangan');
+        const statusIdx = getColIndex('Status');
+        const lampiranIdx = getColIndex('Lampiran');
+        const catatanIdx = getColIndex('Catatan');
+        const lampiran2Idx = getColIndex('Lampiran2');
+        const catatan2Idx = getColIndex('Catatan2');
+        const lokasiIdx = getColIndex('Lokasi');
+
+        const parsed = valueRows.map((row, i) => {
+          const getVal = (idx: number) => idx > -1 && idx < row.length ? row[idx]?.trim() || '' : '';
           
-          const getIndex = (names: string[]) => {
-            return headers.findIndex(h => {
-              if (!h) return false;
-              const normalized = h.trim().toUpperCase().replace(/[\s._-]+/g, '');
-              return names.some(n => normalized === n.toUpperCase().replace(/[\s._-]+/g, ''));
-            });
+          const userEmail = getVal(userIdx);
+          const matchedUser = userMap.get(userEmail.toLowerCase()) || {
+            name: userEmail || 'Unknown User',
+            avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(userEmail || 'U')}&background=f0f9ff&color=0284c7`
           };
 
-          const tsIdx = getIndex(['Timestamp', 'Time', 'Tanggal', 'Tgl', 'Date']);
-          const unitIdx = getIndex(['Unit', 'UnitID', 'IDUnit', 'Unit Name', 'Nama Unit']);
-          const infoIdx = getIndex(['Info', 'Keterangan', 'Info_01', 'InfoDetail', 'Detail']);
-          const noteIdx = getIndex(['Note', 'Catatan', 'KeteranganNote']);
-          const imageIdx = getIndex(['Image_01', 'Image01', 'Image', 'Foto', 'Photo', 'Gambar']);
-          const fileIdx = getIndex(['File_01', 'File01', 'File', 'Dokumen', 'Lampiran']);
-          const urlIdx = getIndex(['Url_01', 'Url01', 'Url', 'Link', 'Tautan']);
-          const statusIdx = getIndex(['Status', 'KeteranganStatus', 'PaymentStatus', 'Payment']);
-          const titleDokIdx = getIndex(['Title_Dok', 'TitleDok', 'Title', 'Name', 'FileName', 'File Name', 'Judul']);
+          const unitVal = getVal(unitIdx);
+          const matchedUnit = unitMap.get(unitVal) || {
+            name: unitVal || 'Unknown Unit',
+            logo: `https://ui-avatars.com/api/?name=${encodeURIComponent(unitVal || 'Unit')}&background=f5f5f5&color=737373`
+          };
 
-          const fetchedIssues: IssueItem[] = [];
+          return {
+            id: getVal(issueIdIdx) || `ISS-${1000 + i}`,
+            timestamp: getVal(timestampIdx) || '',
+            keterangan: getVal(keteranganIdx) || '',
+            status: getVal(statusIdx) || 'SEND',
+            userEmail,
+            userName: matchedUser.name,
+            userAvatar: matchedUser.avatar,
+            unitVal,
+            unitName: matchedUnit.name,
+            unitLogo: matchedUnit.logo,
+            lampiran: getVal(lampiranIdx),
+            catatan: getVal(catatanIdx),
+            lampiran2: getVal(lampiran2Idx),
+            catatan2: getVal(catatan2Idx),
+            lokasi: getVal(lokasiIdx),
+          };
+        }).filter(item => item.keterangan && item.status.toUpperCase() !== 'DONE');
 
-          dokRes.values.slice(1).forEach((row: any[]) => {
-            const titleDokVal = titleDokIdx > -1 ? (row[titleDokIdx] || '').trim() : '';
-            
-            // Only process if Title_Dok is equal to "Issue" (case-insensitive)
-            if (titleDokVal.toUpperCase() !== 'ISSUE') return;
-
-            const unitRaw = unitIdx > -1 ? (row[unitIdx] || '').trim() : '';
-            const unitEntry = unitMap.get(unitRaw.toUpperCase());
-            const unitName = unitEntry ? unitEntry.name : (unitRaw || 'Unknown Unit');
-            const unitLogo = unitEntry ? unitEntry.logo : '';
-
-            fetchedIssues.push({
-              timestamp: tsIdx > -1 ? (row[tsIdx] || '') : '',
-              unitId: unitRaw,
-              unitName,
-              unitLogo,
-              info: infoIdx > -1 ? (row[infoIdx] || '') : '',
-              note: noteIdx > -1 ? (row[noteIdx] || '').trim() : '',
-              image01: imageIdx > -1 ? (row[imageIdx] || '').trim() : '',
-              file01: fileIdx > -1 ? (row[fileIdx] || '').trim() : '',
-              url01: urlIdx > -1 ? (row[urlIdx] || '').trim() : '',
-              status: statusIdx > -1 ? (row[statusIdx] || '').trim() : '',
-              titleDok: titleDokVal,
-            });
-          });
-
-          setIssues(fetchedIssues);
-        }
-      } catch (error) {
-        console.error('Failed to load issues', error);
-      } finally {
-        setIsLoading(false);
+        setIssues(parsed.reverse());
+      } else {
+        setIssues([]);
       }
+    } catch (err: any) {
+      console.error('Error in Issues fetch:', err);
+      setError(err?.message || 'Gagal memuat data laporan issue.');
+    } finally {
+      setIsLoading(false);
     }
+  };
 
+  useEffect(() => {
     fetchData();
   }, []);
 
-  // Filter Issues
   const filteredIssues = issues.filter(issue => {
-    const matchSearch = 
-      issue.info.toLowerCase().includes(search.toLowerCase()) || 
-      issue.unitName.toLowerCase().includes(search.toLowerCase()) || 
-      issue.note.toLowerCase().includes(search.toLowerCase());
+    const matchesSearch = 
+      (issue.keterangan || '').toLowerCase().includes(search.toLowerCase()) ||
+      (issue.userName || '').toLowerCase().includes(search.toLowerCase()) ||
+      (issue.unitName || '').toLowerCase().includes(search.toLowerCase()) ||
+      (issue.id || '').toLowerCase().includes(search.toLowerCase());
+    
+    const matchesUnit = selectedUnitFilter === 'ALL' || issue.unitName === selectedUnitFilter || issue.unitVal === selectedUnitFilter;
+    const matchesStatus = selectedStatusFilter === 'ALL' || (issue.status || '').toUpperCase() === selectedStatusFilter.toUpperCase();
 
-    const isPaidStatus = issue.status?.trim().toLowerCase() === 'paid' || 
-                         issue.status?.trim().toLowerCase() === 'lunas' || 
-                         issue.status?.trim().toLowerCase() === 'done' || 
-                         issue.status?.trim().toLowerCase() === 'selesai';
-    const isEmptyStatus = !issue.status || issue.status.trim() === '';
-    const isUnpaidStatus = !isEmptyStatus && !isPaidStatus;
-
-    let matchStatus = true;
-    if (statusFilter === 'PAID') matchStatus = isPaidStatus;
-    else if (statusFilter === 'UNPAID') matchStatus = isUnpaidStatus;
-    else if (statusFilter === 'NEW ISSUE') matchStatus = isEmptyStatus;
-
-    let matchUnit = true;
-    if (unitFilter) matchUnit = issue.unitName === unitFilter;
-
-    return matchSearch && matchStatus && matchUnit;
+    return matchesSearch && matchesUnit && matchesStatus;
   });
 
-  const units = Array.from(new Set(issues.map(i => i.unitName).filter(Boolean)));
-
-  // Extract list of statuses for filters
-  const counts = {
-    all: issues.length,
-    paid: issues.filter(i => {
-      const s = i.status?.trim().toLowerCase();
-      return s === 'paid' || s === 'lunas' || s === 'done' || s === 'selesai';
-    }).length,
-    unpaid: issues.filter(i => {
-      const s = i.status?.trim().toLowerCase();
-      const isEmpty = !s || s.trim() === '';
-      return !isEmpty && !(s === 'paid' || s === 'lunas' || s === 'done' || s === 'selesai');
-    }).length,
-    newIssue: issues.filter(i => {
-      const s = i.status?.trim();
-      return !s || s === '';
-    }).length,
-  };
-
   return (
-    <div className="pb-24 bg-gray-50 min-h-screen relative">
-      <header className="bg-[#429dbb] text-white px-5 py-4 shadow-md sticky top-0 z-40 w-full mb-4 flex items-center gap-3">
-        <button onClick={() => navigate(-1)} className="p-1 -ml-1 hover:bg-white/10 rounded-full transition-colors shrink-0 cursor-pointer">
+    <div className="pb-24 bg-gray-50 min-h-screen relative font-sans">
+      {/* Header */}
+      <header className="bg-[#429dbb] text-white px-5 py-4 shadow-md sticky top-0 z-50 w-full mb-4 flex items-center gap-3">
+        <button 
+          onClick={() => navigate(-1)} 
+          className="p-1 -ml-1 hover:bg-white/10 rounded-full transition-colors shrink-0 cursor-pointer"
+          id="back-to-dashboard-btn"
+        >
           <ArrowLeft className="w-5 h-5 text-white" />
         </button>
-        <h1 className="text-xl font-bold tracking-tight drop-shadow-sm flex-1">Daftar Issue</h1>
+        <div className="flex-1">
+          <h1 className="text-xl font-bold tracking-tight drop-shadow-sm">Daftar Issue</h1>
+        </div>
       </header>
 
-      {/* Search and Filters */}
-      <div className="px-4 flex gap-2 mb-4">
+            {/* Search and Filters Row */}
+      <div className="px-4 mb-4 flex gap-2">
         <div className="relative flex-1">
           <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input 
             type="search" 
-            placeholder="Cari issue, unit, atau catatan..." 
+            placeholder="Cari kendala, unit, pelapor..." 
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full bg-white shadow-sm border-gray-150 border rounded-xl pl-9 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#429dbb] transition-all font-sans"
+            className="w-full bg-white shadow-sm border-gray-100 border rounded-xl pl-9 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#429dbb] transition-all font-sans"
+            id="issue-search-input"
           />
+          {search && (
+            <button
+              onClick={() => setSearch('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
         </div>
         <button 
           onClick={() => setShowFilter(true)}
-          className="bg-white border border-gray-150 shadow-sm rounded-xl px-3 py-2.5 flex items-center justify-center shrink-[#1] hover:bg-gray-50 focus:ring-2 focus:ring-[#429dbb] transition-all cursor-pointer"
+          className="bg-white border border-gray-100 shadow-sm rounded-xl px-3 py-2.5 flex items-center justify-center shrink-0 hover:bg-gray-50 focus:ring-2 focus:ring-[#429dbb] transition-all cursor-pointer"
         >
           <Filter className="w-5 h-5 text-gray-600" />
         </button>
       </div>
 
-      {/* Main Issue List */}
-      <div className="px-4 space-y-3">
-        {isLoading && (
-          <div className="flex flex-col justify-center items-center py-20 gap-2">
-            <Loader2 className="w-8 h-8 text-[#429dbb] animate-spin" />
-            <span className="text-sm font-semibold text-gray-500">Memuat info issue...</span>
+{/* Main List Container */}
+      <div className="px-4">
+        {isLoading ? (
+          <div className="flex flex-col items-center justify-center py-20 gap-3">
+            <Loader2 className="w-10 h-10 text-[#429dbb] animate-spin" />
+            <p className="text-sm font-semibold text-gray-500">Menghubungkan ke Google Sheet...</p>
           </div>
-        )}
-        
-        {!isLoading && filteredIssues.length === 0 && (
-          <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-gray-150/80 p-6 shadow-sm">
-            <AlertCircle className="w-10 h-10 text-gray-350 mx-auto mb-2.5" />
-            <h3 className="font-bold text-gray-700">Tidak Ada Issue</h3>
-            <p className="text-xs text-gray-400 mt-1 max-w-[240px] mx-auto">Tidak ditemukan daftar issue yang sesuai dengan pencarian atau filter Anda.</p>
-          </div>
-        )}
-
-         {!isLoading && filteredIssues.map((issue, idx) => {
-          const isPaid = issue.status?.trim().toLowerCase() === 'paid' || 
-                         issue.status?.trim().toLowerCase() === 'lunas' || 
-                         issue.status?.trim().toLowerCase() === 'done' || 
-                         issue.status?.trim().toLowerCase() === 'selesai';
-          const isEmptyStatus = !issue.status || issue.status.trim() === '';
-          
-          return (
-            <motion.div 
-              key={idx}
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: Math.min(idx * 0.04, 0.4), duration: 0.25 }}
-              onClick={() => setSelectedIssue(issue)}
-              className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 hover:border-gray-200 transition-all cursor-pointer active:scale-[0.99] hover:shadow-md relative overflow-hidden group"
+        ) : error ? (
+          <div className="text-center py-12 bg-red-50 rounded-2xl border border-red-100 p-6 shadow-inner">
+            <AlertCircle className="w-10 h-10 text-red-500 mx-auto mb-3" />
+            <p className="text-sm font-bold text-red-600 mb-3">{error}</p>
+            <button
+              onClick={fetchData}
+              className="px-5 py-2 bg-red-600 text-white rounded-xl text-xs font-bold shadow hover:bg-red-700 transition active:scale-95 cursor-pointer"
             >
-              {/* Top Row: Unit, Avatar, timestamp */}
-              <div className="flex items-center justify-between gap-3 mb-2.5">
-                <div className="flex items-center gap-2 min-w-0">
-                  <div className="w-7 h-7 bg-blue-50/60 rounded-full border border-blue-100/40 overflow-hidden shrink-0 flex items-center justify-center font-bold text-[#429dbb] text-xs">
-                    {issue.unitLogo ? (
-                      <img src={ubahKeDirectLink(issue.unitLogo)} alt={issue.unitName} className="w-full h-full object-cover" />
-                    ) : (
-                      <span>{issue.unitName.substring(0, 2).toUpperCase()}</span>
-                    )}
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-xs font-bold text-gray-900 truncate leading-tight group-hover:text-[#429dbb] transition-colors">{issue.unitName}</p>
-                    <p className="text-[10px] text-gray-400 font-medium">{issue.timestamp}</p>
-                  </div>
-                </div>
+              Coba Lagi
+            </button>
+          </div>
+        ) : filteredIssues.length === 0 ? (
+          <div className="text-center py-16 bg-white rounded-2xl border border-gray-150 shadow-sm p-6">
+            <AlertTriangle className="w-12 h-12 text-gray-300 mx-auto mb-3 animate-pulse" />
+            <p className="text-sm font-bold text-gray-500">Tidak ada laporan issue yang ditemukan.</p>
+            <p className="text-xs text-gray-400 mt-1">Coba gunakan filter lain atau ketik kata pencarian baru.</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="text-xs font-bold text-gray-400 uppercase tracking-wider px-1 flex justify-between items-center">
+              <span>List Laporan ({filteredIssues.length})</span>
+              <span className="text-[10px] lowercase font-normal bg-gray-150 px-2 py-0.5 rounded-full text-gray-600 font-mono">
+                realtime sync
+              </span>
+            </div>
 
-                <div className="shrink-0">
-                  <span className={cn(
-                    "inline-block text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider border",
-                    isPaid 
-                      ? "bg-emerald-50 text-emerald-700 border-emerald-100" 
-                      : (isEmptyStatus 
-                          ? "bg-sky-50 text-sky-700 border-sky-100" 
-                          : "bg-rose-50 text-rose-700 border-rose-100")
-                  )}>
-                    {isPaid ? 'Paid' : (isEmptyStatus ? 'New Issue' : 'Unpaid')}
-                  </span>
-                </div>
-              </div>
+            <AnimatePresence mode="popLayout">
+              {filteredIssues.map((issue, idx) => {
+                const isResolved = issue.status.toUpperCase() === 'RESOLVED';
+                const isInProgress = issue.status.toUpperCase() === 'IN_PROGRESS';
+                const isSend = issue.status.toUpperCase() === 'SEND';
 
-              {/* Middle Row: Title / Info */}
-              <p className="text-sm font-bold text-gray-800 line-clamp-2 leading-snug pr-2 mb-2">
-                {issue.info || 'No Title Info'}
-              </p>
-
-              {/* Note Preview if exists */}
-              {issue.note && (
-                <div className="bg-slate-50 border-l-2 border-slate-300 p-2 rounded-r-lg mb-2.5">
-                  <p className="text-[11px] italic text-gray-500 line-clamp-1">
-                    "{issue.note}"
-                  </p>
-                </div>
-              )}
-
-              {/* Bottom Row: Attachments badging indicator */}
-              {(issue.image01 || issue.file01 || issue.url01) && (
-                <div className="flex gap-2 mt-1">
-                  {issue.image01 && (
-                    <span className="inline-flex items-center gap-1.5 text-[10px] text-blue-600 bg-blue-50 px-2 py-1 rounded-lg font-bold border border-blue-100/30">
-                      <ImageIcon className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                      Foto
-                    </span>
-                  )}
-                  {issue.file01 && (
-                    <span className="inline-flex items-center gap-1.5 text-[10px] text-indigo-600 bg-indigo-50 px-2 py-1 rounded-lg font-bold border border-indigo-100/30">
-                      <FileText className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
-                      File
-                    </span>
-                  )}
-                  {issue.url01 && (
-                    <span className="inline-flex items-center gap-1.5 text-[10px] text-violet-600 bg-violet-50 px-2 py-1 rounded-lg font-bold border border-violet-100/30">
-                      <LinkIcon className="w-3.5 h-3.5 text-violet-500 shrink-0" />
-                      Link
-                    </span>
-                  )}
-                </div>
-              )}
-
-            </motion.div>
-          );
-        })}
-      </div>
-
-      {/* POPUP MODAL: Issue Detail */}
-      <AnimatePresence>
-        {selectedIssue && (() => {
-          const isPaid = selectedIssue.status?.trim().toLowerCase() === 'paid' || 
-                         selectedIssue.status?.trim().toLowerCase() === 'lunas' || 
-                         selectedIssue.status?.trim().toLowerCase() === 'done' || 
-                         selectedIssue.status?.trim().toLowerCase() === 'selesai';
-          const isEmptyStatus = !selectedIssue.status || selectedIssue.status.trim() === '';
-          
-          const popupStatusClass = isPaid 
-            ? "bg-emerald-50 text-emerald-700 border-emerald-200" 
-            : (isEmptyStatus 
-                ? "bg-sky-50 text-sky-700 border-sky-100" 
-                : "bg-rose-50 text-rose-700 border-rose-200");
-
-          return (
-            <>
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                onClick={() => setSelectedIssue(null)}
-                className="fixed inset-0 bg-black/60 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4"
-              />
-              <motion.div
-                initial={{ y: '100%', scale: 1 }}
-                animate={{ y: 0, scale: 1 }}
-                exit={{ y: '100%', scale: 1 }}
-                transition={{ type: "spring", damping: 26, stiffness: 300 }}
-                className="fixed bottom-0 sm:bottom-auto left-0 sm:left-auto right-0 sm:right-auto sm:top-1/2 sm:-translate-y-1/2 w-full sm:max-w-md bg-white rounded-t-3xl sm:rounded-2xl z-[110] border border-gray-100 overflow-hidden flex flex-col shadow-2xl max-h-[85vh] sm:max-h-[90vh]"
-              >
-                {/* Modal Header */}
-                <div className="px-5 py-4.5 border-b border-gray-100 flex items-center justify-between bg-white relative">
-                  <div className="flex items-center gap-2">
-                    <ShieldAlert className="w-5 h-5 text-red-500 shrink-0" />
-                    <span className="font-bold text-gray-900 text-sm tracking-wide">Detail Laporan Issue</span>
-                  </div>
-                  <button 
-                    onClick={() => setSelectedIssue(null)}
-                    className="p-1.5 hover:bg-gray-100 rounded-full text-gray-400 hover:text-gray-600 transition-colors cursor-pointer"
+                return (
+                  <motion.div 
+                    key={`issue-card-${issue.id}-${idx}`}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 cursor-pointer active:scale-[0.98] transition-transform"
+                    onClick={() => navigate(`/issues/${issue.id}`)}
+                    id={`issue-item-${issue.id}`}
                   >
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
-
-                {/* Modal Content - Scrollable */}
-                <div className="p-5 overflow-y-auto space-y-4 font-sans text-sm flex-1 scrollbar-thin">
-                  {/* Judul Issue / Info */}
-                  <div className="space-y-1.5">
-                    <p className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Judul Issue</p>
-                    <h3 className="font-extrabold text-gray-900 text-base leading-snug">
-                      {selectedIssue.info || 'Tidak ada judul/keterangan'}
-                    </h3>
-                  </div>
-
-                  {/* Unit & Timestamp row */}
-                  <div className="grid grid-cols-2 gap-4 bg-gray-50 p-4 rounded-xl border border-gray-100/50">
-                    <div className="space-y-1">
-                      <p className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Unit</p>
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className="w-6 h-6 bg-blue-50 rounded-full border border-blue-100/50 overflow-hidden shrink-0 flex items-center justify-center font-bold text-[#429dbb] text-[10px]">
-                          {selectedIssue.unitLogo ? (
-                            <img src={ubahKeDirectLink(selectedIssue.unitLogo)} alt={selectedIssue.unitName} className="w-full h-full object-cover" />
-                          ) : (
-                            <span>{selectedIssue.unitName.substring(0,2).toUpperCase()}</span>
-                          )}
+                    <div className="flex justify-between items-start mb-2 gap-3">
+                      <div className="flex-1 min-w-0">
+                        
+                        <h3 className="font-semibold text-gray-900 leading-tight mb-2 pr-2">{issue.keterangan}</h3>
+                        
+                        <div className="space-y-1">
+                          <p className="text-xs text-gray-600 truncate"><span className="text-gray-400 font-medium">Unit :</span> {issue.unitName}</p>
+                          <p className="text-xs text-gray-900 font-bold">{issue.timestamp}</p>
                         </div>
-                        <span className="font-bold text-gray-800 text-xs truncate" title={selectedIssue.unitName}>
-                          {selectedIssue.unitName}
+                      </div>
+
+                      <div className="flex flex-col items-end gap-3 shrink-0">
+                        <span className={cn(
+                          "text-[10px] font-bold px-2 py-1 rounded-md whitespace-nowrap border shadow-sm",
+                          isResolved ? "bg-emerald-50 text-emerald-700 border-emerald-200" :
+                          isInProgress ? "bg-amber-50 text-amber-700 border-amber-200" :
+                          "bg-blue-50 text-blue-700 border-blue-200"
+                        )}>
+                          {issue.status}
                         </span>
-                      </div>
-                    </div>
-
-                    <div className="space-y-1">
-                      <p className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Timestamp</p>
-                      <div className="flex items-center gap-1.5 text-xs text-gray-700 font-medium">
-                        <Calendar className="w-3.5 h-3.5 text-gray-400 shrink-0" />
-                        <span>{selectedIssue.timestamp || '-'}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Status */}
-                  <div className="space-y-1 border-b border-gray-100/60 pb-3">
-                    <p className="text-[10px] uppercase font-bold text-gray-400 tracking-wider mb-1">Status</p>
-                    <span className={cn(
-                      "inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black uppercase border tracking-wider",
-                      popupStatusClass
-                    )}>
-                      <span className={cn(
-                        "w-2 h-2 rounded-full",
-                        isPaid ? "bg-emerald-500 animate-pulse" : (isEmptyStatus ? "bg-sky-500 animate-pulse" : "bg-rose-500 animate-pulse")
-                      )} />
-                      {isPaid ? 'Paid' : (isEmptyStatus ? 'New Issue' : 'Unpaid')}
-                    </span>
-                  </div>
-
-                  {/* Note Section if not empty */}
-                  {selectedIssue.note && (
-                    <div className="space-y-1.5 bg-amber-50/50 border-l-4 border-amber-400 p-3.5 rounded-r-xl">
-                      <p className="text-[10px] uppercase font-extrabold text-amber-700 tracking-wider flex items-center gap-1">
-                        <Bookmark className="w-3.5 h-3.5 fill-current" />
-                        Catatan Tambahan
-                      </p>
-                      <p className="text-xs text-gray-700 font-medium italic whitespace-pre-wrap leading-relaxed">
-                        "{selectedIssue.note}"
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Attachments Section */}
-                  {(selectedIssue.image01 || selectedIssue.file01 || selectedIssue.url01) && (
-                    <div className="space-y-3.5 pt-1">
-                      <p className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Lampiran Dokumen</p>
-                      
-                      {/* Image Viewer Element */}
-                      {selectedIssue.image01 && (
-                        <div className="space-y-1.5">
-                          <p className="text-xs font-semibold text-gray-500 flex items-center gap-1">
-                            <ImageIcon className="w-3.5 h-3.5 text-blue-500" /> Image Preview
-                          </p>
-                          <div className="relative rounded-xl overflow-hidden border border-gray-200 shadow-sm bg-slate-50 flex justify-center items-center h-48 max-h-48 group">
+                        
+                        {issue.userName && issue.userName !== 'Unknown User' && (
+                          <div className="flex items-center gap-1.5 bg-gray-50 px-2 py-1.5 rounded-lg border border-gray-100 mt-auto">
                             <img 
-                              src={ubahKeDirectLink(selectedIssue.image01)} 
-                              alt="Attachment Preview" 
+                              src={issue.userAvatar || undefined} 
+                              alt={issue.userName} 
+                              className="w-5 h-5 rounded-full object-cover shadow-sm bg-white"
+                              referrerPolicy="no-referrer"
                               onError={(e) => {
-                                // fallback if image fails to load
-                                e.currentTarget.style.display = 'none';
-                              }}
-                              className="w-full h-full object-cover transition-transform group-hover:scale-102 duration-300" 
+                                (e.target as HTMLImageElement).src = `https://ui-avatars.com/api/?name=${encodeURIComponent(issue.userName)}&background=eff6ff&color=3b82f6`;
+                              }} 
                             />
-                            <a 
-                              href={selectedIssue.image01} 
-                              target="_blank" 
-                              rel="noreferrer"
-                              className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-xs font-bold gap-1 cursor-pointer"
-                            >
-                              <ExternalLink className="w-4 h-4" /> Buka Foto Ukuran Penuh
-                            </a>
+                            <span className="text-[10px] font-medium text-gray-700 truncate max-w-[80px]">{issue.userName}</span>
                           </div>
-                        </div>
-                      )}
-
-                      {/* File Card Attachment */}
-                      {selectedIssue.file01 && (
-                        <a 
-                          href={selectedIssue.file01}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="flex items-center justify-between p-3 rounded-xl border border-dashed border-indigo-150 bg-indigo-50/20 hover:bg-indigo-50/50 transition-colors group cursor-pointer"
-                        >
-                          <div className="flex items-center gap-2.5 min-w-0">
-                            <div className="p-2 rounded-lg bg-indigo-100 text-indigo-600 shrink-0">
-                              <FileText className="w-4 h-4" />
-                            </div>
-                            <div className="min-w-0">
-                              <p className="text-xs font-bold text-indigo-950 truncate">Dokumen Lampiran</p>
-                              <p className="text-[9px] text-gray-400 truncate font-mono">Buka file / Drive</p>
-                            </div>
-                          </div>
-                          <ExternalLink className="w-4 h-4 text-indigo-400 group-hover:text-indigo-600 transition-colors shrink-0" />
-                        </a>
-                      )}
-
-                      {/* Links Card Attachment */}
-                      {selectedIssue.url01 && (
-                        <a 
-                          href={selectedIssue.url01}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="flex items-center justify-between p-3 rounded-xl border border-dashed border-violet-150 bg-violet-50/20 hover:bg-violet-50/50 transition-colors group cursor-pointer"
-                        >
-                          <div className="flex items-center gap-2.5 min-w-0">
-                            <div className="p-2 rounded-lg bg-violet-100 text-violet-600 shrink-0">
-                              <LinkIcon className="w-4 h-4" />
-                            </div>
-                            <div className="min-w-0">
-                              <p className="text-xs font-bold text-violet-950 truncate">Link Tautan</p>
-                              <p className="text-[9px] text-gray-400 truncate font-mono">{selectedIssue.url01}</p>
-                            </div>
-                          </div>
-                          <ExternalLink className="w-4 h-4 text-violet-400 group-hover:text-violet-600 transition-colors shrink-0" />
-                        </a>
-                      )}
+                        )}
+                      </div>
                     </div>
-                  )}
 
-                </div>
-
-                {/* Modal Footer */}
-                <div className="p-4 bg-gray-50 border-t border-gray-100 flex justify-end">
-                  <button 
-                    type="button"
-                    onClick={() => setSelectedIssue(null)}
-                    className="px-5 py-2 bg-[#429dbb] hover:bg-[#32849d] text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
-                  >
-                    Tutup
-                  </button>
-                </div>
-              </motion.div>
-            </>
-          );
-        })()}
-      </AnimatePresence>
-
-      {/* Slide Up Filter (BottomSheet) */}
+                    </motion.div>
+                );
+              })}
+            </AnimatePresence>
+          </div>
+        )}
+      </div>
+    
       <AnimatePresence>
         {showFilter && (
           <>
@@ -533,17 +332,17 @@ export function Issues() {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setShowFilter(false)}
-              className="fixed inset-0 bg-black/50 z-[120]"
+              className="fixed inset-0 bg-black/50 z-40"
             />
             <motion.div 
               initial={{ y: '100%' }}
               animate={{ y: 0 }}
               exit={{ y: '100%' }}
               transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-              className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-white rounded-t-2xl z-[130] overflow-hidden shadow-2xl pb-safe"
+              className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-white rounded-t-2xl z-50 overflow-hidden shadow-2xl pb-safe"
             >
               <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-white sticky top-0">
-                <h3 className="font-bold text-gray-900 text-sm">Filter Issue</h3>
+                <h3 className="font-bold text-gray-900">Filter Issue</h3>
                 <button onClick={() => setShowFilter(false)} className="p-1 hover:bg-gray-100 rounded-full transition-colors cursor-pointer">
                   <X className="w-5 h-5 text-gray-500" />
                 </button>
@@ -551,90 +350,80 @@ export function Issues() {
               
               <div className="p-4 space-y-6 max-h-[60vh] overflow-y-auto">
                 <div>
-                  <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2.5">Status</h4>
+                  <h4 className="text-sm font-semibold text-gray-900 mb-3">Unit</h4>
                   <div className="flex flex-wrap gap-2">
-                    {[
-                      { key: 'ALL', label: `Semua (${counts.all})` },
-                      { key: 'PAID', label: `Paid (${counts.paid})` },
-                      { key: 'UNPAID', label: `Unpaid (${counts.unpaid})` },
-                      { key: 'NEW ISSUE', label: `New Issue (${counts.newIssue})` }
-                    ].map((st) => (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedUnitFilter('ALL')}
+                      className={cn(
+                        "px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer",
+                        selectedUnitFilter === 'ALL'
+                          ? "bg-[#429dbb] text-white shadow-sm"
+                          : "bg-gray-50 text-gray-600 border border-gray-200 hover:bg-gray-100"
+                      )}
+                    >
+                      ALL
+                    </button>
+                    {units.map((u, idx) => (
                       <button
-                        key={st.key}
+                        key={`filter-unit-${u.id}-${idx}`}
                         type="button"
-                        onClick={() => setStatusFilter(st.key)}
+                        onClick={() => setSelectedUnitFilter(u.name)}
                         className={cn(
-                          "px-4 py-2 rounded-full text-xs font-semibold border transition-all cursor-pointer",
-                          statusFilter === st.key 
-                            ? "bg-[#e5f5f9] border-[#429dbb] text-[#256e84]" 
-                            : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50"
+                          "px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5",
+                          selectedUnitFilter === u.name
+                            ? "bg-[#429dbb] text-white shadow-sm"
+                            : "bg-gray-50 text-gray-600 border border-gray-200 hover:bg-gray-100"
                         )}
                       >
-                        {st.label}
+                        {u.logo && (
+                          <img 
+                            src={u.logo} 
+                            alt="" 
+                            className="w-4 h-4 rounded-full object-cover" 
+                            referrerPolicy="no-referrer"
+                          />
+                        )}
+                        <span>{u.name}</span>
                       </button>
                     ))}
                   </div>
                 </div>
 
-                {units.length > 0 && (
-                  <div>
-                    <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2.5">Unit</h4>
-                    <div className="flex flex-wrap gap-2">
+                <div>
+                  <h4 className="text-sm font-semibold text-gray-900 mb-3">Status</h4>
+                  <div className="flex flex-wrap gap-2">
+                    {['ALL', 'SEND', 'IN_PROGRESS', 'RESOLVED'].map((st) => (
                       <button
+                        key={`filter-status-${st}`}
                         type="button"
-                        onClick={() => setUnitFilter('')}
+                        onClick={() => setSelectedStatusFilter(st)}
                         className={cn(
-                          "px-4 py-2 rounded-full text-xs font-semibold border transition-all cursor-pointer",
-                          unitFilter === '' 
-                            ? "bg-[#e5f5f9] border-[#429dbb] text-[#256e84]" 
-                            : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50"
+                          "px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer",
+                          selectedStatusFilter === st
+                            ? "bg-[#429dbb] text-white shadow-sm"
+                            : "bg-gray-50 text-gray-600 border border-gray-200 hover:bg-gray-100"
                         )}
                       >
-                        Semua Unit
+                        {st}
                       </button>
-                      {units.map((unit) => (
-                        <button
-                          key={unit}
-                          type="button"
-                          onClick={() => setUnitFilter(unit === unitFilter ? '' : unit)}
-                          className={cn(
-                            "px-4 py-2 rounded-full text-xs font-semibold border transition-all cursor-pointer",
-                            unitFilter === unit 
-                              ? "bg-[#e5f5f9] border-[#429dbb] text-[#256e84]" 
-                              : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50"
-                          )}
-                        >
-                          {unit}
-                        </button>
-                      ))}
-                    </div>
+                    ))}
                   </div>
-                )}
-              </div>
+                </div>
 
-              <div className="p-4 bg-white border-t border-gray-100 flex gap-3">
-                <button 
-                  type="button"
-                  onClick={() => {
-                    setStatusFilter('ALL');
-                    setUnitFilter('');
-                  }}
-                  className="flex-1 py-3 px-4 rounded-xl font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 transition-colors cursor-pointer text-xs"
-                >
-                  Reset
-                </button>
-                <button 
-                  type="button"
-                  onClick={() => setShowFilter(false)}
-                  className="flex-1 py-3 px-4 rounded-xl font-medium text-white bg-[#429dbb] hover:bg-[#32849d] transition-colors shadow-sm cursor-pointer text-xs"
-                >
-                  Terapkan
-                </button>
+                <div className="pt-2">
+                  <button
+                    onClick={() => setShowFilter(false)}
+                    className="w-full py-3 bg-[#429dbb] text-white rounded-xl font-bold shadow-sm hover:bg-[#36859f] transition-colors cursor-pointer"
+                  >
+                    Terapkan Filter
+                  </button>
+                </div>
               </div>
             </motion.div>
           </>
         )}
       </AnimatePresence>
-    </div>
+</div>
   );
 }

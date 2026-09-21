@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Filter, Search, X, Plus, Loader2, Calendar, FileText, ChevronDown, CheckCircle2, Upload, AlertCircle } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { cn } from '../lib/utils';
+import { cn, formatUnitName } from '../lib/utils';
 import { getSheetData, appendSheetData } from '../lib/api';
+import { logActivity } from '../lib/activityLogger';
 import { DriveService } from '../lib/driveService';
+import { triggerNotificationFeedback } from '../utils/feedback';
 
 const MOCK_PROJECTS = [
   { id: '1', title: 'Website Revamp HQ', unit: 'HQ', status: 'On going', totalTasks: 10, completedTasks: 4 },
@@ -15,7 +17,16 @@ const MOCK_PROJECTS = [
 
 export function Projects() {
   const navigate = useNavigate();
-  const [search, setSearch] = useState('');
+  const [searchParams] = useSearchParams();
+  const initialSearch = searchParams.get('q') || searchParams.get('search') || '';
+  const [search, setSearch] = useState(initialSearch);
+
+  useEffect(() => {
+    const q = searchParams.get('q') || searchParams.get('search');
+    if (q) {
+      setSearch(q);
+    }
+  }, [searchParams]);
   const [showFilter, setShowFilter] = useState(false);
   const [showAddProject, setShowAddProject] = useState(false);
   const [projects, setProjects] = useState<any[]>(MOCK_PROJECTS);
@@ -40,6 +51,12 @@ export function Projects() {
   
   const [successToast, setSuccessToast] = useState(false);
   const [errorToast, setErrorToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (successToast || errorToast) {
+      triggerNotificationFeedback();
+    }
+  }, [successToast, errorToast]);
   
   // Filter states
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
@@ -269,8 +286,11 @@ export function Projects() {
       setCol(['REPORT', 'PROJECT REPORT', 'FILE', 'REPORT_FILE', 'REPORT URL'], uploadedReportUrl);
       
       await appendSheetData('Project!A1', [row]);
-      
       const selectedUnit = allUnits.find(u => u.id === newProjectUnit);
+      const unitNameStr = selectedUnit ? selectedUnit.name : newProjectUnit;
+      const formattedUnitStr = formatUnitName(unitNameStr);
+      const creatorName = localStorage.getItem("mtask_user_name") || "User";
+      logActivity('Project', 'Projects', `${creatorName} membuat Project baru "${newProjectName}" [${newProjectId}] untuk unit ${formattedUnitStr}`);
       const newLocalProject = {
         id: newProjectId,
         title: newProjectName,
@@ -301,7 +321,6 @@ export function Projects() {
         </button>
         <h1 className="text-xl font-bold tracking-tight drop-shadow-sm">Daftar Project</h1>
       </header>
-
       <div className="px-4 mb-4 flex gap-2">
         <div className="relative flex-1">
           <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -320,7 +339,6 @@ export function Projects() {
           <Filter className="w-5 h-5 text-gray-600" />
         </button>
       </div>
-
       <div className="px-4 space-y-3">
         {isLoading && (
           <div className="flex justify-center items-center py-10">
@@ -328,7 +346,7 @@ export function Projects() {
             <span className="ml-2 text-sm text-gray-500">Memuat data...</span>
           </div>
         )}
-        {!isLoading && sortedProjects.map((project) => {
+        {!isLoading && sortedProjects.map((project, idx) => {
           const completionPercentage = Math.round((project.completedTasks / project.totalTasks) * 100) || 0;
           
           let cardBg = 'bg-white border-gray-100';
@@ -356,7 +374,7 @@ export function Projects() {
 
           return (
             <motion.div 
-              key={project.id}
+              key={`${project.id}-${idx}`}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               onClick={() => navigate(`/projects/${project.id}`)}
@@ -394,7 +412,6 @@ export function Projects() {
           </div>
         )}
       </div>
-
       {/* FAB Add Project */}
       <button 
         onClick={handleOpenAddProject}
@@ -402,7 +419,6 @@ export function Projects() {
       >
         <Plus className="w-6 h-6" />
       </button>
-
       {/* Slide Up Filter (BottomSheet) */}
       <AnimatePresence>
         {showFilter && (
@@ -494,7 +510,6 @@ export function Projects() {
           </>
         )}
       </AnimatePresence>
-
       {/* Slide Up Add Project (Popup Modal - z-[110] fully covers footer and keeps page interactive) */}
       <AnimatePresence>
         {showAddProject && (
@@ -560,11 +575,12 @@ export function Projects() {
                 {/* Unit Dropdown with Avatar */}
                 <div className="relative">
                   <label className="block text-xs font-semibold text-gray-700 mb-1.5">Unit</label>
-                  <button
+                  <div
                     type="button"
                     onClick={() => setShowUnitDropdown(!showUnitDropdown)}
                     className="w-full flex items-center justify-between bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 text-left"
-                  >
+                    role="button"
+                    tabIndex={0}>
                     {newProjectUnit ? (
                       (() => {
                         const selectedUnit = allUnits.find(u => u.id === newProjectUnit);
@@ -579,7 +595,7 @@ export function Projects() {
                       <span className="text-gray-400">Select unit...</span>
                     )}
                     <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />
-                  </button>
+                  </div>
                   
                   <AnimatePresence>
                     {showUnitDropdown && (
@@ -591,22 +607,23 @@ export function Projects() {
                           exit={{ opacity: 0, y: -10 }}
                           className="absolute left-0 right-0 bottom-full mb-1 max-h-40 bg-white border border-gray-100 rounded-xl shadow-lg overflow-y-auto z-20 divide-y divide-gray-50"
                         >
-                          {allUnits.map((u) => (
-                            <button
-                              key={u.id}
+                          {allUnits.map((u, idx) => (
+                            <div
+                              key={`${u.id}-${idx}`}
                               type="button"
                               onClick={() => {
                                 setNewProjectUnit(u.id);
                                 setShowUnitDropdown(false);
                               }}
                               className="w-full text-left px-3 py-2.5 flex items-center gap-2.5 transition-colors focus:outline-none hover:bg-gray-50"
-                            >
+                              role="button"
+                              tabIndex={0}>
                               <img src={u.logo} alt={u.name} className="w-8 h-8 rounded-full object-cover border border-gray-200 shrink-0" />
                               <div className="min-w-0 flex-1">
                                 <p className="text-xs font-bold text-gray-900 truncate">{u.name}</p>
                                 <p className="text-[10px] text-gray-400 truncate mt-0.5">ID: {u.id}</p>
                               </div>
-                            </button>
+                            </div>
                           ))}
                           {allUnits.length === 0 && (
                             <div className="p-4 text-center text-xs text-gray-400">No units found</div>
@@ -739,7 +756,6 @@ export function Projects() {
           </>
         )}
       </AnimatePresence>
-
       {/* Toast Notification */}
       <AnimatePresence>
         {successToast && (
@@ -754,7 +770,6 @@ export function Projects() {
           </motion.div>
         )}
       </AnimatePresence>
-
       <AnimatePresence>
         {errorToast && (
           <motion.div 

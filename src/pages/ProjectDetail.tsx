@@ -2,8 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { ArrowLeft, ChevronDown, ChevronUp, DollarSign, Calendar, Users, X, Plus, CheckCircle2, Circle, Loader2, Play } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { cn } from '../lib/utils';
+import { cn, formatImageUrl, formatUnitName } from '../lib/utils';
 import { getSheetData, appendSheetData, updateSheetData } from '../lib/api';
+import { logActivity } from '../lib/activityLogger';
+import { triggerNotificationFeedback } from '../utils/feedback';
 
 // Helper to convert column index to letters (0 -> A, 1 -> B, ...)
 function getColumnLetter(colIndex: number): string {
@@ -138,6 +140,12 @@ export function ProjectDetail() {
   const [successToast, setSuccessToast] = useState(false);
   const [errorToast, setErrorToast] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (successToast || errorToast) {
+      triggerNotificationFeedback();
+    }
+  }, [successToast, errorToast]);
+
   const fetchData = async (showLoader = true) => {
     if (!id) return;
     try {
@@ -152,7 +160,7 @@ export function ProjectDetail() {
       ]);
       const subRes = subRes2?.values ? subRes2 : subRes1;
 
-      const userMap = new Map<string, { photo: string, name: string, id: string }>();
+      const userMap = new Map<string, { photo: string, name: string, id: string, avail: string }>();
       const uList: any[] = [];
       if (userRes && userRes.values && userRes.values.length > 0) {
         const headers = userRes.values[0] as string[];
@@ -160,19 +168,22 @@ export function ProjectDetail() {
         const photoIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'PHOTO' || h?.trim().toUpperCase() === 'AVATAR');
         const nameIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'NAME');
         const uidIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'ID');
+        const availIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'AVAIL');
         if (emailIdx > -1) {
           userRes.values.slice(1).forEach((row: any[]) => {
             const email = row[emailIdx]?.trim();
             if (email) {
               const userId = (uidIdx > -1 && row[uidIdx]) ? String(row[uidIdx]).trim() : '';
-              if (userId.toUpperCase() === 'XXX') {
+              const avail = (availIdx > -1 && row[availIdx]) ? String(row[availIdx]).trim().toUpperCase() : '';
+              if (userId.toUpperCase() === 'XXX' || avail === 'CNT') {
                 return;
               }
               const uObj = {
-                photo: (photoIdx > -1 && row[photoIdx]) ? row[photoIdx] : '',
+                photo: formatImageUrl((photoIdx > -1 && row[photoIdx]) ? row[photoIdx] : ''),
                 name: (nameIdx > -1 && row[nameIdx]) ? row[nameIdx] : email.split('@')[0],
                 id: userId,
-                email: email
+                email: email,
+                avail: avail
               };
               userMap.set(email, uObj);
               uList.push(uObj);
@@ -344,9 +355,17 @@ export function ProjectDetail() {
         });
 
         if (idIdx > -1) {
-           const projRowIndex = projRes.values.slice(1).findIndex((row: any[]) => row[idIdx]?.trim() === id);
+           const cleanId = id.trim().toLowerCase();
+           const projRowIndex = projRes.values.slice(1).findIndex((row: any[]) => {
+             const rowProjId = (row[idIdx] || '').trim().toLowerCase();
+             const rowProjName = (nameIdx > -1 && row[nameIdx]) ? row[nameIdx].trim().toLowerCase() : '';
+             return rowProjId === cleanId ||
+                    rowProjId.replace(/[^a-z0-9]/g, '') === cleanId.replace(/[^a-z0-9]/g, '') ||
+                    (rowProjName && rowProjName === cleanId);
+           });
            const projRow = projRowIndex > -1 ? projRes.values.slice(1)[projRowIndex] : null;
            if (projRowIndex > -1 && projRow) {
+              const actualProjId = projRow[idIdx]?.trim() || id;
               const uId = possibleUnitIdx > -1 ? projRow[possibleUnitIdx]?.trim() : '';
               if (uId && unitMap.has(uId)) {
                 unitInfo = unitMap.get(uId)!;
@@ -362,8 +381,8 @@ export function ProjectDetail() {
               const archivedVal = archivedIdx > -1 && projRow[archivedIdx] ? projRow[archivedIdx].trim().toUpperCase() : 'FALSE';
 
               setProject({
-                id: id,
-                name: nameIdx > -1 ? (projRow[nameIdx] || id) : id,
+                id: actualProjId,
+                name: nameIdx > -1 ? (projRow[nameIdx] || actualProjId) : actualProjId,
                 description: descIdx > -1 ? projRow[descIdx] : 'No description available.',
                 status: statusIdx > -1 ? (projRow[statusIdx] || 'Unknown') : 'Unknown',
                 totalTasks,
@@ -500,6 +519,9 @@ export function ProjectDetail() {
       }
 
       await appendSheetData('Task!A1:Z', [newRow]);
+      const matchedUser = allUsers.find(u => u.email.trim().toLowerCase() === (newTaskUser || '').trim().toLowerCase() || u.name?.trim().toLowerCase() === (newTaskUser || '').trim().toLowerCase());
+      const assignedUser = matchedUser ? matchedUser.name : (newTaskUser ? (newTaskUser.includes('@') ? newTaskUser.split('@')[0] : newTaskUser) : 'User');
+      logActivity('Task', 'Project Detail', `${assignedUser} mendapat task baru "${newTaskName}" [${newTaskId || ''}] pada project "${project?.name || 'Unknown'}" [${project?.id || ''}]`);
       
       setSuccessToast(true);
       setTimeout(() => setSuccessToast(false), 3000);
@@ -561,6 +583,13 @@ export function ProjectDetail() {
       // Update local state instantly so standard view reflects the exact change
       setProject((prev: any) => prev ? { ...prev, status: newStatus } : null);
       
+      if (newStatus.toLowerCase().trim() !== 'not started') {
+        const unitNameStr = project.unit?.name || project.unitId || '';
+        const formattedUnitStr = formatUnitName(unitNameStr);
+        const updaterName = localStorage.getItem("mtask_user_name") || "User";
+        logActivity('Project', 'project detail', `${updaterName} mengubah status Project "${project.name}" [${project.id}] untuk unit ${formattedUnitStr} menjadi ${newStatus}`);
+      }
+      
       setSuccessToast(true);
       setTimeout(() => setSuccessToast(false), 3050);
       
@@ -616,7 +645,6 @@ export function ProjectDetail() {
         </button>
         <h1 className="text-xl font-bold tracking-tight drop-shadow-sm">Project Detail</h1>
       </header>
-
       <div className="px-4 space-y-4">
         {/* Card 1: Judul & Deskripsi */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
@@ -703,7 +731,7 @@ export function ProjectDetail() {
               <div className="flex items-center gap-2">
                 <div className="flex -space-x-2">
                   {project.attendants.slice(0, 3).map((att: any, i: number) => (
-                    <img key={i} src={att.avatar || undefined} alt="attendant" className="w-6 h-6 rounded-full border border-white object-cover" />
+                    <img key={`attendant-${i}`} src={att.avatar || undefined} alt="attendant" className="w-6 h-6 rounded-full border border-white object-cover" />
                   ))}
                   {project.attendants.length > 3 && (
                     <div className="w-6 h-6 rounded-full bg-gray-100 border border-white flex items-center justify-center text-[8px] font-bold text-gray-600 z-10">
@@ -722,13 +750,14 @@ export function ProjectDetail() {
 
         {/* Card 3: Tasks List (Toggle expand) */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-          <button 
+          <div
             onClick={() => setExpandTasks(!expandTasks)}
             className="w-full flex items-center justify-between p-4 bg-white cursor-pointer hover:bg-gray-50 transition-colors"
-          >
+            role="button"
+            tabIndex={0}>
             <h3 className="font-semibold text-gray-900">Task <span className="font-normal text-gray-500 ml-1">({project.completedTasks}/{project.totalTasks} Done)</span></h3>
             {expandTasks ? <ChevronUp className="w-5 h-5 text-gray-400" /> : <ChevronDown className="w-5 h-5 text-gray-400" />}
-          </button>
+          </div>
           
           <AnimatePresence>
             {expandTasks && (
@@ -739,7 +768,7 @@ export function ProjectDetail() {
                 className="overflow-hidden"
               >
                 <div className="p-4 pt-0 space-y-3">
-                  {project.tasks.map((task: any) => {
+                  {project.tasks.map((task: any, index: number) => {
                     const isDone = task.status === 'Done';
                     const isTodo = task.status === 'Todo';
                     const bgClass = isDone 
@@ -750,7 +779,7 @@ export function ProjectDetail() {
 
                     return (
                       <div 
-                        key={task.id} 
+                        key={`${task.id}-${index}`} 
                         onClick={() => navigate(`/tasks/${task.id}`)}
                         className={cn("flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors", bgClass)}
                       >
@@ -853,15 +882,15 @@ export function ProjectDetail() {
           </div>
         )}
       </div>
-
       {/* FAB Add Task */}
-      <button 
-        onClick={handleOpenAddTask}
-        className="fixed bottom-20 right-5 w-14 h-14 bg-blue-600 rounded-full shadow-lg shadow-blue-500/30 flex items-center justify-center text-white hover:bg-blue-700 active:scale-95 transition-all z-20 cursor-pointer"
-      >
-        <Plus className="w-6 h-6" />
-      </button>
-
+      {localStorage.getItem("mtask_user_email") === "adi.grinder.9@gmail.com" && (
+        <button 
+          onClick={handleOpenAddTask}
+          className="fixed bottom-20 right-5 w-14 h-14 bg-blue-600 rounded-full shadow-lg shadow-blue-500/30 flex items-center justify-center text-white hover:bg-blue-700 active:scale-95 transition-all z-20 cursor-pointer"
+        >
+          <Plus className="w-6 h-6" />
+        </button>
+      )}
       {/* Slide Up Add Task (Popup Modal) */}
       <AnimatePresence>
         {showAddTask && (
@@ -918,11 +947,12 @@ export function ProjectDetail() {
                 {/* Custom User Dropdown with Avatar */}
                 <div className="relative">
                   <label className="block text-xs font-semibold text-gray-700 mb-1.5">User Assigner</label>
-                  <button
+                  <div
                     type="button"
                     onClick={() => setShowUserDropdown(!showUserDropdown)}
                     className="w-full flex items-center justify-between bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-                  >
+                    role="button"
+                    tabIndex={0}>
                     {newTaskUser ? (
                       (() => {
                         const selectedUser = allUsers.find(u => u.email === newTaskUser);
@@ -938,7 +968,7 @@ export function ProjectDetail() {
                       <span className="text-gray-400">Select user...</span>
                     )}
                     <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />
-                  </button>
+                  </div>
                   
                   <AnimatePresence>
                     {showUserDropdown && (
@@ -950,24 +980,25 @@ export function ProjectDetail() {
                           exit={{ opacity: 0, y: -10 }}
                           className="absolute left-0 right-0 bottom-full mb-1 max-h-40 bg-white border border-gray-100 rounded-xl shadow-lg overflow-y-auto z-20 divide-y divide-gray-50"
                         >
-                          {allUsers.map((u) => {
+                          {allUsers.map((u, i) => {
                             const avatarUrl = u.photo || `https://ui-avatars.com/api/?name=${encodeURIComponent(u.name || u.email)}&background=eff6ff&color=3b82f6`;
                             return (
-                              <button
-                                key={u.email}
+                              <div
+                                key={`${u.email}-${i}`}
                                 type="button"
                                 onClick={() => {
                                   setNewTaskUser(u.email);
                                   setShowUserDropdown(false);
                                 }}
                                 className="w-full text-left px-3 py-2.5 flex items-center gap-2.5 transition-colors focus:outline-none hover:bg-gray-50"
-                              >
+                                role="button"
+                                tabIndex={0}>
                                 <img src={avatarUrl} alt={u.name} className="w-8 h-8 rounded-full object-cover border border-gray-200 shrink-0" />
                                 <div className="min-w-0 flex-1">
                                   <p className="text-xs font-bold text-gray-900 truncate leading-tight">{u.name}</p>
                                   <p className="text-[10px] text-gray-400 truncate mt-0.5">{u.email}</p>
                                 </div>
-                              </button>
+                              </div>
                             );
                           })}
                           {allUsers.length === 0 && (
@@ -1053,7 +1084,6 @@ export function ProjectDetail() {
           </>
         )}
       </AnimatePresence>
-
       {/* Toast Notification */}
       <AnimatePresence>
         {successToast && (
@@ -1068,7 +1098,6 @@ export function ProjectDetail() {
           </motion.div>
         )}
       </AnimatePresence>
-
       <AnimatePresence>
         {errorToast && (
           <motion.div 
@@ -1082,7 +1111,6 @@ export function ProjectDetail() {
           </motion.div>
         )}
       </AnimatePresence>
-
       {/* Unit Detail Popup */}
       <AnimatePresence>
         {showUnitPopup && (
@@ -1103,7 +1131,6 @@ export function ProjectDetail() {
           </div>
         )}
       </AnimatePresence>
-
       {/* Attendant Popup */}
       <AnimatePresence>
         {showAttendantPopup && (
@@ -1118,7 +1145,7 @@ export function ProjectDetail() {
               </div>
               <div className="p-4 overflow-y-auto space-y-3">
                 {project.attendants.map((att: any, i: number) => (
-                  <div key={i} className="flex items-center gap-3 p-3 bg-gray-50 border border-gray-100 rounded-xl">
+                  <div key={`attendant-list-${i}`} className="flex items-center gap-3 p-3 bg-gray-50 border border-gray-100 rounded-xl">
                     <img src={att.avatar || undefined} alt="attendant" className="w-10 h-10 rounded-full border border-gray-200 object-cover shrink-0" />
                     <div>
                       <p className="font-bold text-gray-900 leading-tight">{att.name}</p>

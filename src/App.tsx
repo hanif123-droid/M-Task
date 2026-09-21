@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, useLocation, useNavigate } from 'react-router-dom';
-import { RefreshCw, CheckSquare } from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 import { Dashboard } from './pages/Dashboard';
 import { AllTasks } from './pages/AllTasks';
 import { MyTask } from './pages/MyTask';
@@ -19,12 +19,123 @@ import { UsersList } from './pages/Users';
 import { UserDetail } from './pages/UserDetail';
 import { Settings } from './pages/Settings';
 import { Issues } from './pages/Issues';
-import { LghForm } from './pages/LghForm';
+import { IssueDetail } from './pages/IssueDetail';
 import BoganathaTransactions from './pages/BoganathaTransactions';
+import { DaftarBelanja } from './pages/DaftarBelanja';
+import { DaftarDailyReport } from './pages/DaftarDailyReport';
+import { DailyReportDetail } from './pages/DailyReportDetail';
+import { LghDailyReport } from './pages/LghDailyReport';
+import { LghForm } from './pages/LghForm';
 import { Footer } from './components/Footer';
-import { initAuth, googleSignIn } from './lib/firebase';
 import { cn } from './lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
+import { triggerClickFeedback, triggerNotificationFeedback, requestNotificationPermission, sendDeviceNotification } from './utils/feedback';
+import { Bell, X, Check, Volume2, AlertCircle } from 'lucide-react';
+import { getSheetData } from './lib/api';
+import { LghGlobalNotification } from './components/LghGlobalNotification';
+
+function TaskReviewNotification() {
+  const [reviewTask, setReviewTask] = useState<any | null>(null);
+  const navigate = useNavigate();
+
+  const getShownNotifs = (): string[] => {
+    try {
+      const item = localStorage.getItem('mtask_shown_review_notifs');
+      return item ? JSON.parse(item) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  useEffect(() => {
+    const checkTasks = async () => {
+      const email = (localStorage.getItem('mtask_user_email') || '').trim().toLowerCase();
+      if (email !== 'adi.grinder.9@gmail.com') return;
+
+      try {
+        const res = await getSheetData('Task!A1:Z2000');
+        if (res?.values?.length > 0) {
+          const headers = res.values[0] as string[];
+          const idIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'TASK_ID' || h?.trim().toUpperCase() === 'ID');
+          const titleIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'TASK_NAME' || h?.trim().toUpperCase() === 'TASK NAME');
+          const statusIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'STATUS');
+
+          if (statusIdx > -1 && idIdx > -1) {
+            // Find the most recent task with 'Review' status
+            const reviewTasks = res.values.slice(1).map((row: any[]) => ({
+              id: row[idIdx],
+              title: titleIdx > -1 ? row[titleIdx] : 'Unknown Task',
+              status: row[statusIdx]
+            })).filter((t: any) => t.status?.trim().toLowerCase() === 'review' && t.id);
+
+            if (reviewTasks.length > 0) {
+              const latestTask = reviewTasks[reviewTasks.length - 1]; // Assume appended to end
+              
+              const shownNotifications = getShownNotifs();
+              if (!shownNotifications.includes(latestTask.id)) {
+                setReviewTask(latestTask);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch tasks for notification', err);
+      }
+    };
+
+    checkTasks();
+    const interval = setInterval(checkTasks, 60000); // Check every minute
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleDismiss = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (reviewTask) {
+      const shownNotifications = getShownNotifs();
+      localStorage.setItem('mtask_shown_review_notifs', JSON.stringify([...shownNotifications, reviewTask.id]));
+      setReviewTask(null);
+    }
+  };
+
+  const handleClick = () => {
+    if (reviewTask) {
+      const shownNotifications = getShownNotifs();
+      localStorage.setItem('mtask_shown_review_notifs', JSON.stringify([...shownNotifications, reviewTask.id]));
+      navigate(`/tasks/${reviewTask.id}`);
+      setReviewTask(null);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      {reviewTask && (
+        <motion.div
+          initial={{ opacity: 0, y: -50, scale: 0.95 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: -20, scale: 0.95 }}
+          className="absolute top-16 left-4 right-4 bg-yellow-50 rounded-2xl shadow-xl border border-yellow-200 p-4 z-[60] cursor-pointer"
+          onClick={handleClick}
+        >
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 bg-yellow-100 rounded-full flex items-center justify-center shrink-0">
+              <AlertCircle className="w-6 h-6 text-yellow-600" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h4 className="text-sm font-bold text-gray-900">New Task To Review</h4>
+              <p className="text-xs text-gray-600 mt-0.5 truncate">{reviewTask.title}</p>
+            </div>
+            <button
+              onClick={handleDismiss}
+              className="p-2 -mr-2 -mt-2 text-gray-400 hover:text-gray-600 hover:bg-yellow-100 rounded-full transition-colors shrink-0"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
 
 // Pull-to-refresh & Swipe-to-go-back Wrapper
 function AppLayout({ children }: { children: React.ReactNode }) {
@@ -33,6 +144,42 @@ function AppLayout({ children }: { children: React.ReactNode }) {
   const touchStartY = useRef(0);
   const touchStartX = useRef(0);
   
+  // Notification states
+  const [hasPrompt, setHasPrompt] = useState(false);
+  const [testSuccess, setTestSuccess] = useState(false);
+
+  useEffect(() => {
+    // Check if browser/device supports notifications and has defaulted permission
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      const isDefault = Notification.permission === 'default';
+      const userDismissed = sessionStorage.getItem('notif-prompt-dismissed') === 'true';
+      if (isDefault && !userDismissed) {
+        // Slightly delay the prompt for organic feel
+        const timeout = setTimeout(() => {
+          setHasPrompt(true);
+        }, 1500);
+        return () => clearTimeout(timeout);
+      }
+    }
+  }, []);
+
+  const handleEnableNotifications = async () => {
+    const success = await requestNotificationPermission();
+    if (success) {
+      setHasPrompt(false);
+      setTestSuccess(true);
+      setTimeout(() => setTestSuccess(false), 4000);
+    } else {
+      // Permission might be denied or closed
+      setHasPrompt(false);
+    }
+  };
+
+  const handleDismissPrompt = () => {
+    setHasPrompt(false);
+    sessionStorage.setItem('notif-prompt-dismissed', 'true');
+  };
+
   const navigate = useNavigate();
 
   const handleTouchStart = (e: React.TouchEvent) => {
@@ -76,6 +223,79 @@ function AppLayout({ children }: { children: React.ReactNode }) {
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
     >
+      <TaskReviewNotification />
+      {/* 1. Device Notification Invitation Banner */}
+      <AnimatePresence>
+        {hasPrompt && (
+          <motion.div 
+            initial={{ opacity: 0, y: -40 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -40 }}
+            className="absolute top-3 left-3 right-3 bg-gradient-to-r from-[#429dbb] via-blue-600 to-indigo-600 rounded-2xl shadow-xl z-50 p-4 border border-white/10 text-white"
+          >
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 bg-white/15 rounded-xl flex items-center justify-center shrink-0 shadow-inner">
+                <Bell className="w-5 h-5 text-white animate-bounce" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h4 className="text-sm font-bold tracking-tight">Aktifkan Notifikasi HP 📱</h4>
+                <p className="text-[11px] text-blue-100 leading-normal mt-0.5">
+                  Izinkan aplikasi ini mengirim suara ringtone, haptic getar, & push info langsung ke smartphone Anda!
+                </p>
+                <div className="flex items-center gap-1.5 mt-3">
+                  <button 
+                    onClick={handleEnableNotifications}
+                    className="bg-white text-blue-600 font-bold text-[11px] px-3.5 py-1.5 rounded-lg active:scale-95 shadow-sm transition-all flex items-center gap-1 cursor-pointer"
+                  >
+                    <Check className="w-3.5 h-3.5 stroke-[3px]" />
+                    Ya, Aktifkan
+                  </button>
+                  <button 
+                    onClick={handleDismissPrompt}
+                    className="bg-black/20 text-white font-medium text-[11px] px-3 py-1.5 rounded-lg active:scale-95 border border-white/10 hover:bg-black/30 transition-all cursor-pointer"
+                  >
+                    Nanti Saja
+                  </button>
+                </div>
+              </div>
+              <button 
+                onClick={handleDismissPrompt}
+                className="text-white/75 hover:text-white hover:bg-white/10 p-1 rounded-lg transition-colors shrink-0 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* 2. Success Test Notification Feedback Banner */}
+      <AnimatePresence>
+        {testSuccess && (
+          <motion.div 
+            initial={{ opacity: 0, y: -20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -20, scale: 0.95 }}
+            className="absolute top-3 left-3 right-3 bg-emerald-600 rounded-2xl shadow-lg z-50 p-3 px-3.5 flex items-center gap-3 border border-emerald-500/20 text-white"
+          >
+            <div className="w-7 h-7 bg-white/20 rounded-lg flex items-center justify-center shrink-0">
+              <Volume2 className="w-4 h-4 text-white" />
+            </div>
+            <p className="flex-1 leading-snug text-[10.5px]">
+              Notifikasi & Suara Getar aktif! Klik tombol di samping untuk coba tes native push.
+            </p>
+            <button 
+              onClick={() => {
+                sendDeviceNotification('Notifikasi Lovissa Group 🔔', 'Hebat! Ini adalah simulasi push notification langsung di hp Anda.');
+              }}
+              className="bg-white text-emerald-600 text-[10.5px] font-bold px-3 py-1.5 rounded-lg hover:bg-emerald-50 active:scale-95 transition-all text-center shrink-0 cursor-pointer shadow-sm"
+            >
+              Tes Kirim
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <div 
         className="absolute top-0 left-0 right-0 flex justify-center items-center overflow-hidden transition-all duration-200 z-50"
         style={{ height: pullY, opacity: pullY / 60 }}
@@ -97,12 +317,79 @@ function AppLayout({ children }: { children: React.ReactNode }) {
   );
 }
 
+class ErrorBoundary extends React.Component<any, any> {
+  state: any;
+  props: any;
+
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error("ErrorBoundary caught an error", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 font-sans">
+          <div className="w-full max-w-md bg-white rounded-3xl shadow-xl border border-red-100 p-6 text-center">
+            <div className="w-12 h-12 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4">
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
+            <h2 className="text-lg font-bold text-gray-900 mb-1">Aplikasi Mengalami Masalah</h2>
+            <p className="text-xs text-gray-600 mb-4">
+              Terjadi kesalahan rendering. Silakan muat ulang halaman ini atau kembali ke Dashboard.
+            </p>
+            <div className="bg-red-50 rounded-xl p-3 text-left mb-4 max-h-48 overflow-y-auto border border-red-100">
+              <p className="text-xs font-mono text-red-700 whitespace-pre-wrap font-semibold">
+                {this.state.error?.message || "Kesalahan tidak diketahui"}
+              </p>
+              {this.state.error?.stack && (
+                <p className="text-[10px] font-mono text-red-500 mt-2 whitespace-pre-wrap opacity-80 leading-relaxed">
+                  {this.state.error.stack}
+                </p>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  localStorage.clear();
+                  window.location.href = "/";
+                }}
+                className="flex-1 bg-gray-100 text-gray-700 font-semibold text-xs py-2.5 rounded-xl hover:bg-gray-200 transition-all"
+              >
+                Reset Cache & Home
+              </button>
+              <button
+                onClick={() => window.location.reload()}
+                className="flex-1 bg-blue-600 text-white font-semibold text-xs py-2.5 rounded-xl hover:bg-blue-700 transition-all shadow-md shadow-blue-500/10"
+              >
+                Muat Ulang
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 function PageTransitions() {
   const location = useLocation();
   return (
     <AnimatePresence mode="wait">
       {/* @ts-ignore */}
-      <Routes location={location} key={location.pathname}>
+      <Routes location={location} key={location.pathname || 'root'}>
         <Route path="/" element={<motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} transition={{ duration: 0.2 }}><Dashboard /></motion.div>} />
         <Route path="/all-tasks" element={<motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} transition={{ duration: 0.2 }}><AllTasks /></motion.div>} />
         <Route path="/tasks" element={<motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} transition={{ duration: 0.2 }}><MyTask /></motion.div>} />
@@ -121,387 +408,56 @@ function PageTransitions() {
         <Route path="/users" element={<motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} transition={{ duration: 0.2 }}><UsersList /></motion.div>} />
         <Route path="/users/:id" element={<motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} transition={{ duration: 0.2 }}><UserDetail /></motion.div>} />
         <Route path="/issues" element={<motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} transition={{ duration: 0.2 }}><Issues /></motion.div>} />
-        <Route path="/lgh-form" element={<motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} transition={{ duration: 0.2 }}><LghForm /></motion.div>} />
+        <Route path="/issues/:id" element={<motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} transition={{ duration: 0.2 }}><IssueDetail /></motion.div>} />
         <Route path="/boganatha-transactions" element={<motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} transition={{ duration: 0.2 }}><BoganathaTransactions /></motion.div>} />
+        <Route path="/daftar-belanja" element={<motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} transition={{ duration: 0.2 }}><DaftarBelanja /></motion.div>} />
+        <Route path="/daftar-daily-report" element={<motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} transition={{ duration: 0.2 }}><DaftarDailyReport /></motion.div>} />
+        <Route path="/daily-report/:id" element={<motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} transition={{ duration: 0.2 }}><DailyReportDetail /></motion.div>} />
+        <Route path="/lgh-daily-report" element={<motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} transition={{ duration: 0.2 }}><LghDailyReport /></motion.div>} />
+        <Route path="/lgh-form" element={<motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} transition={{ duration: 0.2 }}><LghForm /></motion.div>} />
       </Routes>
     </AnimatePresence>
   );
 }
 
-import { getSheetDataAnonymously } from './lib/api';
-
 export default function App() {
-  interface UserFromSheet {
-    email: string;
-    password?: string;
-  }
-
-  const [needsAuth, setNeedsAuth] = useState(true);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [authInitialized, setAuthInitialized] = useState(false);
-  const [usersFromSheet, setUsersFromSheet] = useState<UserFromSheet[]>([]);
-  const [isLoadingUsers, setIsLoadingUsers] = useState(false);
-  
-  const [emailInput, setEmailInput] = useState('');
-  const [passwordInput, setPasswordInput] = useState('');
-  const [loginError, setLoginError] = useState('');
-
-  // Load all user options from the User Google Sheet
   useEffect(() => {
-    let active = true;
-    async function loadUsers() {
-      setIsLoadingUsers(true);
-      try {
-        const res = await getSheetDataAnonymously('User!A1:Z1000').catch(() => null);
-        if (res?.values?.length > 0 && active) {
-          const headers = res.values[0] as string[];
-          const emailIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'EMAIL');
-          const passIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'PASSWORD' || h?.trim().toUpperCase() === 'PASS');
-          
-          if (emailIdx > -1 && passIdx > -1) {
-            const list: UserFromSheet[] = [];
-            res.values.slice(1).forEach((row: any[]) => {
-              const email = row[emailIdx]?.trim() || '';
-              const password = row[passIdx]?.trim() || '';
-              if (email) {
-                list.push({ email, password });
-              }
-            });
-            setUsersFromSheet(list);
-          }
-        }
-      } catch (err) {
-        console.error('Failed to load user options', err);
-      } finally {
-        if (active) setIsLoadingUsers(false);
+    // 1. Global Interceptor for click sound and vibration
+    const handleGlobalClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target) return;
+
+      // Find if clicking an interactive element
+      const interactive = target.closest('button, a, input, select, textarea, [role="button"], .cursor-pointer, .clickable');
+      if (interactive) {
+        triggerClickFeedback();
       }
-    }
+    };
 
-    loadUsers();
+    // 2. Wrap window.alert to automatically play notification feedback
+    const originalAlert = window.alert;
+    window.alert = function (message) {
+      triggerNotificationFeedback();
+      originalAlert(message);
+    };
 
+    window.addEventListener('click', handleGlobalClick, { capture: true, passive: true });
+    
     return () => {
-      active = false;
+      window.removeEventListener('click', handleGlobalClick, { capture: true });
+      window.alert = originalAlert; // Restore on unmount
     };
   }, []);
 
-  useEffect(() => {
-    const isBypassed = localStorage.getItem('mtask_auth_bypass') === 'true';
-    const unsub = initAuth(
-      (user) => { 
-        if (user?.email) {
-          localStorage.setItem('mtask_user_email', user.email);
-        }
-        setNeedsAuth(false); 
-        setAuthInitialized(true); 
-      },
-      () => { 
-        if (isBypassed) {
-           setNeedsAuth(false);
-        } else {
-           setNeedsAuth(true); 
-        }
-        setAuthInitialized(true); 
-      }
-    );
-    return () => unsub();
-  }, []);
-
-  const handleGoogleLogin = async () => {
-    setIsLoggingIn(true);
-    setLoginError('');
-    try {
-      const res = await googleSignIn();
-      if (res && res.user?.email) {
-        localStorage.setItem('mtask_user_email', res.user.email);
-        setNeedsAuth(false);
-      }
-    } catch(e) {
-      console.error(e);
-      setLoginError('Google Sign-In failed.');
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
-  const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzErkVjCuNiLOyTt8JMe0EecsBA-ukzS47n01U5w18C8NwHVN45njADa52G1brHXv0P/exec";
-
-  const [activeTab, setActiveTab] = useState<'signin' | 'signup'>('signin');
-  const [signUpEmail, setSignUpEmail] = useState('');
-  const [signUpPassword, setSignUpPassword] = useState('');
-  const [authSuccess, setAuthSuccess] = useState('');
-
-  const handleSignUp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!signUpEmail || !signUpPassword) {
-      setLoginError('Email dan Password wajib diisi.');
-      return;
-    }
-    if (signUpPassword.length < 6) {
-      setLoginError('Password minimal 6 karakter.');
-      return;
-    }
-    
-    setIsLoggingIn(true);
-    setLoginError('');
-    setAuthSuccess('');
-    
-    try {
-      const formParams = new URLSearchParams();
-      formParams.append("action", "signup");
-      formParams.append("email", signUpEmail);
-      formParams.append("password", signUpPassword);
-
-      const res = await fetch(SCRIPT_URL, {
-        method: "POST",
-        body: formParams,
-        headers: { "Content-Type": "application/x-www-form-urlencoded" }
-      });
-      
-      const data = await res.json();
-      if (data.success) {
-        setAuthSuccess('Pendaftaran berhasil! Silakan Sign In.');
-        setEmailInput(signUpEmail);
-        setPasswordInput('');
-        setTimeout(() => {
-          setActiveTab('signin');
-          setAuthSuccess('');
-        }, 2000);
-      } else {
-        setLoginError(data.message || 'Pendaftaran gagal.');
-      }
-    } catch (err) {
-      setLoginError('Koneksi ke Apps Script gagal. Pastikan fungsi doPost telah ditambahkan dan di-deploy ulang.');
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
-  const handleEmailLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!emailInput || !passwordInput) {
-      setLoginError('Email dan Password wajib diisi.');
-      return;
-    }
-    
-    setIsLoggingIn(true);
-    setLoginError('');
-    setAuthSuccess('');
-    try {
-      // Prioritize the Apps Script API if available
-      try {
-        const formParams = new URLSearchParams();
-        formParams.append("action", "login");
-        formParams.append("email", emailInput);
-        formParams.append("password", passwordInput);
-
-        const res = await fetch(SCRIPT_URL, {
-          method: "POST",
-          body: formParams,
-          headers: { "Content-Type": "application/x-www-form-urlencoded" }
-        });
-        
-        const data = await res.json();
-        if (data.success) {
-          localStorage.setItem('mtask_auth_bypass', 'true');
-          localStorage.setItem('mtask_user_email', data.user.email);
-          setNeedsAuth(false);
-          return;
-        } else {
-          setLoginError(data.message || 'Email atau password salah.');
-          setIsLoggingIn(false);
-          return;
-        }
-      } catch (scriptErr) {
-         // Fallback to local sheets fetch if Apps script POST fails (e.g. they haven't added doPost yet)
-         console.warn("Apps Script POST failed, falling back to local sheet fetch", scriptErr);
-      }
-
-      // 1. Try matching with preloaded usersFromSheet first for high performance
-      if (usersFromSheet.length > 0) {
-        const localMatched = usersFromSheet.find(u => u.email.trim().toLowerCase() === emailInput.trim().toLowerCase());
-        if (localMatched) {
-          if (localMatched.password?.trim() === passwordInput.trim()) {
-            localStorage.setItem('mtask_auth_bypass', 'true');
-            localStorage.setItem('mtask_user_email', localMatched.email.trim());
-            setNeedsAuth(false);
-            return;
-          } else {
-            setLoginError('Email atau password salah.');
-            return;
-          }
-        }
-      }
-
-      // 2. Fetch live data if not found in preloaded or preloaded was empty
-      const res = await getSheetDataAnonymously('User!A1:Z1000').catch(() => null);
-      if (res?.values?.length > 0) {
-        const headers = res.values[0] as string[];
-        const emailIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'EMAIL');
-        const passIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'PASSWORD' || h?.trim().toUpperCase() === 'PASS');
-
-        if (emailIdx === -1 || passIdx === -1) {
-          setLoginError('Format tabel User tidak sesuai (butuh kolom Email & Password).');
-          return;
-        }
-
-        const userRow = res.values.slice(1).find((row: any[]) => row[emailIdx]?.trim()?.toLowerCase() === emailInput.trim().toLowerCase());
-        
-        if (userRow) {
-          if (userRow[passIdx]?.trim() === passwordInput.trim()) {
-            localStorage.setItem('mtask_auth_bypass', 'true');
-            localStorage.setItem('mtask_user_email', userRow[emailIdx].trim());
-            setNeedsAuth(false);
-          } else {
-            setLoginError('Email atau password salah.');
-          }
-        } else {
-          setLoginError('Email tidak ditemukan.');
-        }
-      } else {
-        setLoginError('Gagal memproses login karena data pengguna tidak tersedia.');
-      }
-    } catch (err) {
-      setLoginError('Gagal melakukan login. Periksa koneksi atau hubungi admin.');
-      console.error(err);
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
-  if (!authInitialized) return <div className="min-h-screen flex items-center justify-center text-sm text-gray-500">Loading MTask...</div>;
-
-  if (needsAuth) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-6 text-center">
-        <div className="w-24 h-24 rounded-3xl flex items-center justify-center mb-6 shadow-xl overflow-hidden bg-transparent">
-          <img src="/logo.svg" alt="MTask Logo" className="w-full h-full object-cover" />
-        </div>
-        <h1 className="text-2xl font-bold text-gray-900 tracking-tight mb-2">Welcome to MTask</h1>
-        <p className="text-gray-500 mb-8 text-sm max-w-xs mx-auto">Sign in to access your dashboard, tasks, and projects.</p>
-        
-        <div className="w-full max-w-sm">
-          <div className="flex p-1 bg-gray-200/50 rounded-2xl mb-6">
-            <button 
-              onClick={() => setActiveTab('signin')} 
-              className={cn("flex-1 py-2 text-sm font-semibold rounded-xl transition-all", activeTab === 'signin' ? "bg-white text-[#429dbb] shadow-sm" : "text-gray-500 hover:text-gray-900")}
-            >
-              Sign In
-            </button>
-            <button 
-              onClick={() => setActiveTab('signup')} 
-              className={cn("flex-1 py-2 text-sm font-semibold rounded-xl transition-all", activeTab === 'signup' ? "bg-white text-[#2a9d8f] shadow-sm" : "text-gray-500 hover:text-gray-900")}
-            >
-              Sign Up
-            </button>
-          </div>
-
-          {authSuccess && (
-             <div className="p-3 bg-green-50 border border-green-100 text-green-700 text-sm rounded-xl mb-4 text-left flex items-start gap-2">
-               <CheckSquare className="w-4 h-4 mt-0.5" />
-               <p>{authSuccess}</p>
-             </div>
-          )}
-          {loginError && (
-             <div className="p-3 bg-red-50 border border-red-100 text-red-600 text-sm rounded-xl mb-4 text-left">
-               {loginError}
-             </div>
-          )}
-
-          {activeTab === 'signin' ? (
-            <form onSubmit={handleEmailLogin} className="space-y-4 mb-6 text-left">
-              <div>
-                <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">Email</label>
-                <input 
-                  type="email" 
-                  value={emailInput}
-                  onChange={e => setEmailInput(e.target.value)}
-                  placeholder="Masukkan email Anda" 
-                  className="w-full border border-gray-300 rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-[#429dbb] focus:border-[#429dbb] outline-none text-sm bg-white text-gray-800 font-medium"
-                  required
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">Password</label>
-                <input 
-                  type="password" 
-                  value={passwordInput}
-                  onChange={e => setPasswordInput(e.target.value)}
-                  placeholder="••••••••" 
-                  className="w-full border border-gray-300 bg-white text-gray-800 rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-[#429dbb] focus:border-[#429dbb] outline-none text-sm font-medium"
-                  required
-                />
-              </div>
-              <button 
-                type="submit"
-                disabled={isLoggingIn}
-                className="w-full bg-[#429dbb] hover:bg-[#36829c] text-white font-semibold rounded-xl py-3 transition-colors disabled:opacity-50 mt-2"
-              >
-                {isLoggingIn ? 'Memproses...' : 'Sign In'}
-              </button>
-            </form>
-          ) : (
-            <form onSubmit={handleSignUp} className="space-y-4 mb-6 text-left">
-              <div>
-                <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">New Email</label>
-                <input 
-                  type="email" 
-                  value={signUpEmail}
-                  onChange={e => setSignUpEmail(e.target.value)}
-                  placeholder="Masukkan email baru" 
-                  className="w-full border border-gray-300 rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-[#2a9d8f] focus:border-[#2a9d8f] outline-none text-sm bg-white text-gray-800 font-medium"
-                  required
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">Create Password</label>
-                <input 
-                  type="password" 
-                  value={signUpPassword}
-                  onChange={e => setSignUpPassword(e.target.value)}
-                  placeholder="Minimal 6 karakter" 
-                  minLength={6}
-                  className="w-full border border-gray-300 bg-white text-gray-800 rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-[#2a9d8f] focus:border-[#2a9d8f] outline-none text-sm font-medium"
-                  required
-                />
-              </div>
-              <button 
-                type="submit"
-                disabled={isLoggingIn}
-                className="w-full bg-[#2a9d8f] hover:bg-[#21867a] text-white font-semibold rounded-xl py-3 transition-colors disabled:opacity-50 mt-2"
-              >
-                {isLoggingIn ? 'Mendaftarkan...' : 'Sign Up Akun Baru'}
-              </button>
-            </form>
-          )}
-
-          <div className="relative mb-6">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-gray-200"></div>
-            </div>
-            <div className="relative flex justify-center text-sm">
-              <span className="px-2 bg-gray-50 text-gray-500">Or continue with</span>
-            </div>
-          </div>
-
-          <button 
-            onClick={handleGoogleLogin}
-            disabled={isLoggingIn}
-            className="w-full bg-white border border-gray-200 text-gray-700 px-6 py-3 rounded-xl font-medium shadow-sm flex items-center justify-center gap-3 transition-active hover:bg-gray-50 touch-manipulation disabled:opacity-50"
-          >
-            <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5" />
-            Sign in with Google
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <BrowserRouter>
-      <AppLayout>
-        <PageTransitions />
-      </AppLayout>
-      <Footer />
+      <ErrorBoundary>
+        <AppLayout>
+          <PageTransitions />
+          <LghGlobalNotification />
+        </AppLayout>
+        <Footer />
+      </ErrorBoundary>
     </BrowserRouter>
   );
 }

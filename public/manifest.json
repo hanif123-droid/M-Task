@@ -1,0 +1,17 @@
+{
+  "name": "Mtask Workspace",
+  "short_name": "Mtask",
+  "description": "Workspace Kolaborasi Lovissa Group",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0ea5e9",
+  "icons": [
+    {
+      "src": "https://unhwnznhwltgpyzdzfah.supabase.co/storage/v1/object/public/Mtask/logo%20icon%26avatar%20user/LOGO%20M-TASK.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

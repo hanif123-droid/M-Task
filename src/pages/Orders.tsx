@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { ArrowLeft, Filter, Search, X, Loader2 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { cn } from '../lib/utils';
+import { cn, formatImageUrl } from '../lib/utils';
 import { getSheetData } from '../lib/api';
 
 function formatIDR(amount: number | string) {
@@ -12,12 +12,22 @@ function formatIDR(amount: number | string) {
 
 export function Orders() {
   const navigate = useNavigate();
-  const [search, setSearch] = useState('');
+  const [searchParams] = useSearchParams();
+  const initialSearch = searchParams.get('q') || searchParams.get('search') || '';
+  const [search, setSearch] = useState(initialSearch);
+
+  useEffect(() => {
+    const q = searchParams.get('q') || searchParams.get('search');
+    if (q) {
+      setSearch(q);
+    }
+  }, [searchParams]);
   const [showFilter, setShowFilter] = useState(false);
   const [orders, setOrders] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   
   const [tierFilter, setTierFilter] = useState<string | null>(null);
+  const [yearFilter, setYearFilter] = useState<string>(new Date().getFullYear().toString());
 
   useEffect(() => {
     async function fetchData() {
@@ -45,19 +55,21 @@ export function Orders() {
           }
         }
 
-        const userMap = new Map<string, {name: string, photo: string}>();
+        const userMap = new Map<string, {name: string, photo: string, role: string}>();
         if (userRes?.values?.length > 0) {
           const headers = userRes.values[0] as string[];
           const emailIdx = headers.findIndex((h: string) => h?.trim().toUpperCase() === 'EMAIL');
           const nameIdx = headers.findIndex((h: string) => h?.trim().toUpperCase() === 'NAME');
           const photoIdx = headers.findIndex((h: string) => h?.trim().toUpperCase() === 'PHOTO' || h?.trim().toUpperCase() === 'AVATAR');
+          const roleIdx = headers.findIndex((h: string) => h?.trim().toUpperCase() === 'ROLE' || h?.trim().toUpperCase() === 'GROUP');
           if (emailIdx > -1) {
             userRes.values.slice(1).forEach((row: any[]) => {
               const email = row[emailIdx]?.trim();
               if (email) {
                 userMap.set(email, {
                   name: (nameIdx > -1 && row[nameIdx]) ? row[nameIdx] : email.split('@')[0],
-                  photo: (photoIdx > -1 && row[photoIdx]) ? row[photoIdx] : `https://ui-avatars.com/api/?name=${encodeURIComponent(row[nameIdx] || email)}&background=eff6ff&color=3b82f6`
+                  photo: (photoIdx > -1 && row[photoIdx]) ? row[photoIdx] : `https://ui-avatars.com/api/?name=${encodeURIComponent(row[nameIdx] || email)}&background=eff6ff&color=3b82f6`,
+                  role: roleIdx > -1 ? row[roleIdx]?.trim() : ''
                 });
               }
             });
@@ -74,6 +86,7 @@ export function Orders() {
           const amountIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'AMOUNT' || h?.trim().toUpperCase() === 'TOTAL');
           const tierIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'REVIEW TIER' || h?.trim().toUpperCase() === 'TIER' || h?.trim().toUpperCase() === 'STATUS');
           const userIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'EMAIL USER' || h?.trim().toUpperCase() === 'EMAIL' || h?.trim().toUpperCase() === 'USER');
+          const dateIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'DATE' || h?.trim().toUpperCase() === 'TANGGAL');
           
           const fetched = orderRes.values.slice(1).map((row: any[], i: number) => {
             const oId = idIdx > -1 ? row[idIdx]?.trim() : `order-${i}`;
@@ -89,6 +102,19 @@ export function Orders() {
             const uEmail = userIdx > -1 ? row[userIdx]?.trim() : '';
             const userInfo = userMap.get(uEmail) || { name: uEmail || 'Unknown User', photo: `https://ui-avatars.com/api/?name=${encodeURIComponent(uEmail || 'U')}&background=eff6ff&color=3b82f6` };
             
+            let dateStr = dateIdx > -1 ? row[dateIdx]?.trim() : '';
+            let yearStr = new Date().getFullYear().toString();
+            if (dateStr) {
+              const d = new Date(dateStr);
+              if (!isNaN(d.getTime())) {
+                yearStr = d.getFullYear().toString();
+              } else if (dateStr.length >= 4) {
+                 // Try to find a 4 digit year
+                 const match = dateStr.match(/\d{4}/);
+                 if (match) yearStr = match[0];
+              }
+            }
+
             return {
               id: oId || `order-${i}`,
               ro,
@@ -96,11 +122,28 @@ export function Orders() {
               unit: unitName,
               amount,
               tier,
+              date: dateStr,
+              year: yearStr,
               userName: userInfo.name,
               userPhoto: userInfo.photo
             };
           }).filter((o: any) => o.detail !== 'Unknown Detail' && o.detail);
-          setOrders(fetched);
+
+          const activeUserEmail = localStorage.getItem('mtask_user_email') || 'designify.creative7@gmail.com';
+          const activeUserRole = userMap.get(activeUserEmail)?.role || '';
+          
+          let filteredByRole = fetched;
+          if (activeUserEmail.toLowerCase() === 'vonyloselia@gmail.com') {
+            filteredByRole = fetched;
+          } else if (activeUserRole?.trim().toLowerCase() === 'admin') {
+            filteredByRole = fetched.filter((o: any) => o.tier?.trim().toLowerCase() === 'admin check');
+          } else if (activeUserEmail.toLowerCase() === 'adi.grinder.9@gmail.com' || activeUserRole?.trim().toLowerCase() === 'board') {
+            filteredByRole = fetched.filter((o: any) => o.tier?.trim().toLowerCase() === 'admin approve');
+          } else if (activeUserEmail.toLowerCase() === 'gilangpradnyatoplo@gmail.com' || activeUserRole?.trim().toLowerCase() === 'boss') {
+            filteredByRole = fetched.filter((o: any) => o.tier?.trim().toLowerCase() === 'board approve');
+          }
+
+          setOrders(filteredByRole.reverse());
         }
       } catch (error) {
         console.error('Failed to fetch data', error);
@@ -112,13 +155,15 @@ export function Orders() {
   }, []);
 
   const tiers = Array.from(new Set(orders.map(o => o.tier)));
+  const years = Array.from(new Set(orders.map(o => o.year))).sort((a, b) => Number(b) - Number(a));
 
   const filteredItems = orders.filter(o => {
     const matchSearch = o.detail.toLowerCase().includes(search.toLowerCase()) || 
                         o.ro.toString().toLowerCase().includes(search.toLowerCase()) ||
                         o.unit.toLowerCase().includes(search.toLowerCase());
     const matchTier = tierFilter ? o.tier === tierFilter : true;
-    return matchSearch && matchTier;
+    const matchYear = yearFilter ? o.year === yearFilter : true;
+    return matchSearch && matchTier && matchYear;
   });
 
   return (
@@ -156,9 +201,9 @@ export function Orders() {
             <span className="ml-2 text-sm text-gray-500">Memuat data...</span>
           </div>
         )}
-        {!isLoading && filteredItems.map((item) => (
+        {!isLoading && filteredItems.map((item, idx) => (
           <motion.div 
-            key={item.id}
+            key={`${item.id}-${idx}`}
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             onClick={() => navigate(`/orders/${item.id}`)}
@@ -176,9 +221,26 @@ export function Orders() {
               </div>
 
               <div className="flex flex-col items-end gap-3 shrink-0">
-                <span className="bg-yellow-50 text-yellow-700 text-[10px] font-bold px-2 py-1 rounded-md whitespace-nowrap border border-yellow-200 shadow-sm">
-                  {item.tier || 'No Status'}
-                </span>
+                {(() => {
+                  const tStr = (item.tier || '').toLowerCase();
+                  let colorClass = "bg-yellow-50 text-yellow-700 border-yellow-200"; // default for Board Approve or unknown
+                  
+                  if (tStr.includes('decline')) {
+                     colorClass = "bg-red-50 text-red-700 border-red-200";
+                  } else if (tStr.includes('disburse')) {
+                     colorClass = "bg-green-50 text-green-700 border-green-200";
+                  } else if (tStr.includes('admin approve')) {
+                     colorClass = "bg-purple-50 text-purple-700 border-purple-200";
+                  } else if (tStr.includes('board approve')) {
+                     colorClass = "bg-yellow-50 text-yellow-700 border-yellow-200";
+                  }
+                  
+                  return (
+                    <span className={cn("text-[10px] font-bold px-2 py-1 rounded-md whitespace-nowrap border shadow-sm", colorClass)}>
+                      {item.tier || 'No Status'}
+                    </span>
+                  );
+                })()}
                 
                 {item.userName && item.userName !== 'Unknown User' && (
                   <div className="flex items-center gap-1.5 bg-gray-50 px-2 py-1.5 rounded-lg border border-gray-100 mt-auto">
@@ -230,6 +292,26 @@ export function Orders() {
               
               <div className="p-4 space-y-6 max-h-[60vh] overflow-y-auto">
                 <div>
+                  <h4 className="text-sm font-semibold text-gray-900 mb-3">Tahun</h4>
+                  <div className="flex flex-wrap gap-2">
+                    {years.map((y) => (
+                      <button
+                        key={y}
+                        onClick={() => setYearFilter(y)}
+                        className={cn(
+                          "px-4 py-2 rounded-full text-sm font-medium border transition-all cursor-pointer",
+                          yearFilter === y 
+                            ? "bg-blue-50 border-blue-200 text-blue-700" 
+                            : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50"
+                        )}
+                      >
+                        {y}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
                   <h4 className="text-sm font-semibold text-gray-900 mb-3">Review Tier</h4>
                   <div className="flex flex-wrap gap-2">
                     {tiers.map((t) => (
@@ -254,6 +336,7 @@ export function Orders() {
                 <button 
                   onClick={() => {
                     setTierFilter(null);
+                    setYearFilter(new Date().getFullYear().toString());
                   }}
                   className="flex-1 py-3 px-4 rounded-xl font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 transition-colors cursor-pointer"
                 >

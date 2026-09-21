@@ -1,6 +1,6 @@
 {
-  "name": "Mtask",
-  "description": "Mtask Dashboard with Google Integrations",
-  "requestFramePermissions": ["camera"],
+  "name": "Mtask Workspace",
+  "description": "Mtask Dashboard - Lovissa & Chillhub Integrated Reports",
+  "requestFramePermissions": ["camera", "microphone", "geolocation"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

@@ -3,13 +3,14 @@ import { ArrowLeft, Search, Loader2, Star, Filter, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getSheetData } from '../lib/api';
-import { cn } from '../lib/utils';
+import { cn, formatImageUrl } from '../lib/utils';
 
-export function getStars(poin: number) {
-  if (poin >= 71) return 4;
-  if (poin >= 51) return 3;
-  if (poin >= 21) return 2;
-  if (poin >= 1) return 1;
+export function getStars(score: number) {
+  if (score >= 61) return 5;
+  if (score >= 51) return 4;
+  if (score >= 41) return 3;
+  if (score >= 31) return 2;
+  if (score >= 21) return 1;
   return 0;
 }
 
@@ -54,26 +55,13 @@ export function UsersList() {
         if (userRes?.values?.length > 0) {
           const headers = userRes.values[0] as string[];
           const emailIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'EMAIL');
-          const nameIdx = headers.findIndex(h => {
-             const key = h?.trim().toUpperCase() || '';
-             return key === 'NAME' || key === 'NAMA';
-          });
-          const idIdx = headers.findIndex(h => {
-             const key = h?.trim().toUpperCase() || '';
-             return key === 'ID' || key === 'KTA' || key === 'KTA ID' || key === 'KTA_ID' || key === 'NIK';
-          });
-          const photoIdx = headers.findIndex(h => {
-             const key = h?.trim().toUpperCase() || '';
-             return key === 'PHOTO' || key === 'AVATAR' || key === 'FOTO' || key === 'IMAGE';
-          });
-          const poinIdx = headers.findIndex(h => {
-             const key = h?.trim().toUpperCase() || '';
-             return key === 'POIN' || key === 'POINT' || key === 'POINTS';
-          });
-          const unitIdIdx = headers.findIndex(h => {
-             const key = h?.trim().toUpperCase() || '';
-             return key === 'UNIT ID' || key === 'UNIT BUSINESS' || key === 'UNIT_BUSINESS' || key === 'UNITID' || key === 'KODE UNIT' || key === 'UNITKODE';
-          });
+          const nameIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'NAME');
+          const idIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'ID');
+          const photoIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'PHOTO' || h?.trim().toUpperCase() === 'AVATAR');
+          const poinIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'POIN');
+          const performanceIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'PERFORMANCE');
+          const unitIdIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'UNIT ID' || h?.trim().toUpperCase() === 'UNIT BUSINESS');
+          const availIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'AVAIL');
 
           const fetched = userRes.values.slice(1).map((row: any[]) => {
             const email = emailIdx > -1 ? row[emailIdx]?.trim() : '';
@@ -82,7 +70,10 @@ export function UsersList() {
             const photo = photoIdx > -1 && row[photoIdx] ? row[photoIdx] : '';
             const poinVal = poinIdx > -1 && row[poinIdx] ? parseInt(row[poinIdx], 10) : 0;
             const poin = isNaN(poinVal) ? 0 : poinVal;
+            const perfVal = performanceIdx > -1 && row[performanceIdx] ? parseInt(row[performanceIdx], 10) : 0;
+            const performance = isNaN(perfVal) ? 0 : perfVal;
             const rawUnitId = unitIdIdx > -1 && row[unitIdIdx] ? row[unitIdIdx].toString().trim() : '';
+            const avail = availIdx > -1 && row[availIdx] ? row[availIdx].toString().trim().toUpperCase() : '';
             
             // Look up unit name
             const unitEntry = uMap.get(rawUnitId.toUpperCase());
@@ -94,10 +85,12 @@ export function UsersList() {
               ktaId,
               photo,
               poin,
+              performance,
               unitId: rawUnitId,
-              unitName
+              unitName,
+              avail
             };
-          }).filter((u: any) => u.name !== 'Unknown Name' && u.name && u.ktaId?.toUpperCase() !== 'XXX');
+          }).filter((u: any) => u.name !== 'Unknown Name' && u.name && u.ktaId?.toUpperCase() !== 'XXX' && u.avail !== 'CNT');
           setUsers(fetched);
         }
       } catch (error) {
@@ -156,11 +149,11 @@ export function UsersList() {
         
         {!isLoading && (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            {filteredItems.map((item) => {
-              const stars = getStars(item.poin);
+            {filteredItems.map((item, idx) => {
+              const stars = getStars(item.performance);
               return (
                 <motion.div 
-                  key={item.email}
+                  key={`${item.email}-${idx}`}
                   initial={{ opacity: 0, scale: 0.95 }}
                   animate={{ opacity: 1, scale: 1 }}
                   onClick={() => navigate(`/users/${encodeURIComponent(item.email)}`)}
@@ -168,17 +161,17 @@ export function UsersList() {
                 >
                   <div className="flex flex-col items-center w-full">
                     <div className="flex gap-0.5 mb-2 h-4">
-                      {Array.from({ length: 4 }).map((_, i) => (
+                      {Array.from({ length: 5 }).map((_, i) => (
                         <Star 
-                          key={i} 
+                          key={`star-${i}`} 
                           className={`w-3.5 h-3.5 ${i < stars ? 'fill-yellow-400 text-yellow-500' : 'text-gray-200'}`} 
                         />
                       ))}
                     </div>
 
-                    <div className="w-16 h-16 bg-blue-50 rounded-full border-2 border-white shadow-md overflow-hidden mb-3">
+                    <div className={cn("w-16 h-16 bg-blue-50 rounded-full border-2 border-white shadow-md overflow-hidden mb-3", item.avail === 'FALSE' ? 'brightness-50 grayscale' : '')}>
                       <img 
-                        src={item.photo || undefined} 
+                        src={formatImageUrl(item.photo) || undefined} 
                         alt={item.name} 
                         className="w-full h-full object-cover" 
                         onError={(e) => {

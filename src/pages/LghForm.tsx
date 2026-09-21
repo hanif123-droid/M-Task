@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Calendar, Camera, Image as ImageIcon, Check, Building2, User, Mail, Phone, Shield, FileText, X, Printer, Download, Sparkles, CreditCard, MessageSquare } from 'lucide-react';
+import { ArrowLeft, Calendar, Camera, Image as ImageIcon, Check, Building2, User, Mail, Phone, Shield, FileText, X, Printer, Download, Sparkles, CreditCard, MessageSquare, Plus, Minus, Globe, Trash2 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { getSheetData, appendSheetData } from '../lib/api';
 import { DriveService } from '../lib/driveService';
+import { logActivity } from '../lib/activityLogger';
 import { CameraModal } from '../components/CameraModal';
+import { toJpeg } from 'html-to-image';
 
 // Clean date parser similar to UnitDetail.tsx
 function parseDate(dateStr: string): Date | null {
@@ -27,7 +29,8 @@ function parseDate(dateStr: string): Date | null {
       } else if (p0 > 12) {
         return new Date(p2, p1 - 1, p0);
       } else {
-        return new Date(p2, p1 - 1, p0);
+        // LGH Form saves checkIn and checkOut as MM/DD/YYYY
+        return new Date(p2, p0 - 1, p1);
       }
     }
   }
@@ -37,9 +40,40 @@ function parseDate(dateStr: string): Date | null {
   return null;
 }
 
+function getWitaParts(d: Date = new Date()) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Makassar",
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "numeric",
+    second: "numeric",
+    hourCycle: "h23",
+  });
+  const parts = formatter.formatToParts(d);
+  let year = d.getFullYear(),
+    month = d.getMonth() + 1,
+    day = d.getDate(),
+    hour = d.getHours(),
+    minute = d.getMinutes(),
+    second = d.getSeconds();
+
+  for (const p of parts) {
+    if (p.type === "year") year = parseInt(p.value, 10);
+    if (p.type === "month") month = parseInt(p.value, 10);
+    if (p.type === "day") day = parseInt(p.value, 10);
+    if (p.type === "hour") hour = parseInt(p.value, 10);
+    if (p.type === "minute") minute = parseInt(p.value, 10);
+    if (p.type === "second") second = parseInt(p.value, 10);
+  }
+  return { year, month, day, hour, minute, second };
+}
+
 const generateGuestRegPdfFile = (
   lghId: string,
   guestName: string,
+  guestTypeStr: string,
   idNo: string,
   phone: string,
   email: string,
@@ -93,50 +127,55 @@ const generateGuestRegPdfFile = (
 
   doc.setFontSize(9);
   doc.setFont("Helvetica", "bold");
-  doc.text("Full Name:", 20, 60);
+  doc.text("Guest Type:", 20, 60);
   doc.setFont("Helvetica", "normal");
-  doc.text(guestName || "-", 60, 60);
+  doc.text(guestTypeStr || "-", 60, 60);
 
   doc.setFont("Helvetica", "bold");
-  doc.text("ID / Passport Number:", 20, 66);
+  doc.text("Full Name:", 20, 66);
   doc.setFont("Helvetica", "normal");
-  doc.text(idNo || "Loaded Existing", 60, 66);
+  doc.text(guestName || "-", 60, 66);
 
   doc.setFont("Helvetica", "bold");
-  doc.text("WhatsApp / Phone:", 20, 72);
+  doc.text("ID / Passport Number:", 20, 72);
   doc.setFont("Helvetica", "normal");
-  doc.text(phone || "-", 60, 72);
+  doc.text(idNo || "Loaded Existing", 60, 72);
 
   doc.setFont("Helvetica", "bold");
-  doc.text("Email Address:", 20, 78);
+  doc.text("WhatsApp / Phone:", 20, 78);
   doc.setFont("Helvetica", "normal");
-  doc.text(email || "-", 60, 78);
+  doc.text(phone || "-", 60, 78);
+
+  doc.setFont("Helvetica", "bold");
+  doc.text("Email Address:", 20, 84);
+  doc.setFont("Helvetica", "normal");
+  doc.text(email || "-", 60, 84);
 
   // Stay Details Segment
   doc.setFont("Helvetica", "bold");
-  doc.text("STAY PERIOD DETAILS", 20, 88);
-  doc.line(20, 90, 190, 90);
+  doc.text("STAY PERIOD DETAILS", 20, 94);
+  doc.line(20, 96, 190, 96);
 
   doc.setFont("Helvetica", "bold");
-  doc.text("Stay Period:", 20, 96);
+  doc.text("Stay Period:", 20, 102);
   doc.setFont("Helvetica", "normal");
-  doc.text(`[${checkIn}] to [${checkOut}]`, 60, 96);
+  doc.text(`[${checkIn}] to [${checkOut}]`, 60, 102);
 
   doc.setFont("Helvetica", "bold");
-  doc.text("Stay Type:", 20, 102);
+  doc.text("Stay Type:", 20, 108);
   doc.setFont("Helvetica", "normal");
-  doc.text(stayType || "-", 60, 102);
+  doc.text(stayType || "-", 60, 108);
 
   doc.setFont("Helvetica", "bold");
-  doc.text("Room Number:", 20, 108);
+  doc.text("Room Number:", 20, 114);
   doc.setFont("Helvetica", "normal");
-  doc.text(roomNum ? `Room ${roomNum}` : "-", 60, 108);
+  doc.text(roomNum ? `Room ${roomNum}` : "-", 60, 114);
 
   doc.setFont("Helvetica", "bold");
-  doc.text("Duration:", 20, 114);
+  doc.text("Duration:", 20, 120);
   doc.setFont("Helvetica", "normal");
   const stayLabel = stayType === 'Daily' ? 'Days' : stayType === 'Weekly' ? 'Weeks' : 'Month';
-  doc.text(`${dur} ${stayLabel}`, 60, 114);
+  doc.text(`${dur} ${stayLabel}`, 60, 120);
 
   // Payment box
   doc.setFillColor(248, 250, 252); // slate-50
@@ -196,7 +235,7 @@ const generateGuestRegPdfFile = (
   doc.setFont("Helvetica", "normal");
   doc.setFontSize(8.5);
   doc.setTextColor(115, 115, 115);
-  doc.text("Tanda Tangan Tamu,", rightAlignX, signatureY, { align: 'center' });
+  doc.text("Guest Signature,", rightAlignX, signatureY, { align: 'center' });
 
   if (sigDataUrl) {
     try {
@@ -227,7 +266,7 @@ export function LghForm() {
 
   // Generated IDs
   const [lghId] = useState(() => `lgh-${Math.floor(1000 + Math.random() * 9000)}`);
-  const [newContactId] = useState(() => `Contact-${Math.floor(1000 + Math.random() * 9000)}`);
+  const [newContactId] = useState(() => `guest${Math.floor(1000 + Math.random() * 9000)}`);
 
   // Basic Form States
   const [type, setType] = useState<'Daily' | 'Weekly' | 'Monthly'>('Daily');
@@ -241,10 +280,13 @@ export function LghForm() {
   const [selectedRoom, setSelectedRoom] = useState<number | null>(null);
 
   // Guest Type States
-  const [guestType, setGuestType] = useState<'Repeater' | 'New Guest'>('New Guest');
+  const [guestType, setGuestType] = useState<'New Guest' | 'Repeater' | 'Extend'>('New Guest');
   
   // Repeater States
   const [selectedRepeaterId, setSelectedRepeaterId] = useState<string>('');
+
+  // Extend States
+  const [selectedExtendId, setSelectedExtendId] = useState<string>('');
 
   // New Guest States
   const [namaTamu, setNamaTamu] = useState('');
@@ -254,6 +296,53 @@ export function LghForm() {
   const [photoIdFile, setPhotoIdFile] = useState<File | null>(null);
 
   // Financial States
+  const DEFAULT_BOOKING_SOURCES = [
+    'Booking.com',
+    'Airbnb',
+    'Trip.com',
+    'Tiket.com',
+    'Agoda',
+    'Direct / Walk-in',
+    'WhatsApp',
+    'Instagram'
+  ];
+
+  const [bookingSources, setBookingSources] = useState<string[]>(() => {
+    let deletedSources: string[] = [];
+    try {
+      const deleted = localStorage.getItem('lgh_deleted_booking_sources');
+      if (deleted) deletedSources = JSON.parse(deleted);
+    } catch (e) {}
+
+    try {
+      const saved = localStorage.getItem('lgh_custom_booking_sources');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          const combined = [...DEFAULT_BOOKING_SOURCES];
+          parsed.forEach((item: string) => {
+            if (
+              item && 
+              typeof item === 'string' && 
+              !combined.some(s => s.toLowerCase() === item.toLowerCase()) &&
+              !deletedSources.some(d => d.toLowerCase() === item.toLowerCase())
+            ) {
+              combined.push(item);
+            }
+          });
+          return combined;
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    }
+    return DEFAULT_BOOKING_SOURCES;
+  });
+
+  const [bookingSource, setBookingSource] = useState<string>('Booking.com');
+  const [showAddBookingSourceModal, setShowAddBookingSourceModal] = useState(false);
+  const [showManageBookingSourceModal, setShowManageBookingSourceModal] = useState(false);
+  const [newBookingSourceName, setNewBookingSourceName] = useState('');
   const [price, setPrice] = useState<string>('');
   const [payment, setPayment] = useState<'Cash' | 'Transfer' | 'Qris'>('Cash');
   const [buktiTransferFile, setBuktiTransferFile] = useState<File | null>(null);
@@ -275,46 +364,98 @@ export function LghForm() {
     async function loadInitialData() {
       try {
         setLoading(true);
-        const [lovissaRes, contactRes] = await Promise.all([
+        const [lovissaRes, userRes] = await Promise.all([
           getSheetData('Lovissa Guest House!A1:Z1000').catch(() => null),
-          getSheetData('Contact!A1:Z1000').catch(() => null)
+          getSheetData('User!A1:Z1000').catch(() => null)
         ]);
 
         // 1. Process existing Lovissa Guest house transactions
         if (lovissaRes?.values?.length > 1) {
           const headers = lovissaRes.values[0] as string[];
+          const idColIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'ID' || h?.trim().toUpperCase() === 'TRANSACTION ID');
           const checkInIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'CHECK IN' || h?.trim().toUpperCase() === 'CHECK-IN' || h?.trim().toUpperCase() === 'CHECKIN');
           const checkOutIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'CHECK OUT' || h?.trim().toUpperCase() === 'CHECK-OUT' || h?.trim().toUpperCase() === 'CHECKOUT');
           const roomIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'ROOM' || h?.trim().toUpperCase() === 'KAMAR');
+          const contactIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'KONTAK' || h?.trim().toUpperCase() === 'CONTACT' || h?.trim().toUpperCase() === 'NAMA' || h?.trim().toUpperCase() === 'NAMA TAMU');
+          const priceIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'PRICE' || h?.trim().toUpperCase() === 'HARGA');
+          const emailIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'EMAIL');
+          const phoneIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'PHONE' || h?.trim().toUpperCase() === 'NO HP');
+          const typeIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'TYPE' || h?.trim().toUpperCase() === 'TIPE');
+          const noIdIdx = headers.findIndex(h => h?.trim().toUpperCase() === 'NO ID' || h?.trim().toUpperCase() === 'KTP' || h?.trim().toUpperCase() === 'NO. KTP' || h?.trim().toUpperCase() === 'NO. IDENTITAS');
+          const sourceIdx = headers.findIndex(h => {
+            const norm = h?.trim().toUpperCase().replace(/[\s._-]+/g, '') || '';
+            return norm === 'BOOKINGSOURCE' || norm === 'SOURCE' || norm === 'CHANNEL' || norm === 'OTA' || norm === 'SUMBER';
+          });
 
-          const processed = lovissaRes.values.slice(1).map((row) => ({
+          const processed = lovissaRes.values.slice(1).map((row, idx) => ({
+            id: (idColIdx > -1 && row[idColIdx]) ? row[idColIdx] : `lgh-row-${idx}`,
             room: roomIdx > -1 ? row[roomIdx] : '',
             checkIn: checkInIdx > -1 ? row[checkInIdx] : '',
-            checkOut: checkOutIdx > -1 ? row[checkOutIdx] : ''
+            checkOut: checkOutIdx > -1 ? row[checkOutIdx] : '',
+            kontak: contactIdx > -1 ? row[contactIdx] : '',
+            price: priceIdx > -1 ? row[priceIdx] : '',
+            email: emailIdx > -1 ? row[emailIdx] : '',
+            phone: phoneIdx > -1 ? row[phoneIdx] : '',
+            type: typeIdx > -1 ? row[typeIdx] : '',
+            noId: noIdIdx > -1 ? row[noIdIdx] : '',
+            bookingSource: sourceIdx > -1 ? row[sourceIdx] : '',
+            raw: row
           }));
           setExistingTransactions(processed);
+
+          // Merge any booking sources discovered from existing sheet records
+          const sheetSources = processed
+            .map((t) => t.bookingSource?.trim())
+            .filter(Boolean);
+          if (sheetSources.length > 0) {
+            setBookingSources((prev) => {
+              let deletedSources: string[] = [];
+              try {
+                const deleted = localStorage.getItem('lgh_deleted_booking_sources');
+                if (deleted) deletedSources = JSON.parse(deleted);
+              } catch (e) {}
+
+              const updated = [...prev];
+              sheetSources.forEach((src: string) => {
+                if (
+                  !updated.some((s) => s.toLowerCase() === src.toLowerCase()) &&
+                  !deletedSources.some(d => d.toLowerCase() === src.toLowerCase())
+                ) {
+                  updated.push(src);
+                }
+              });
+              return updated;
+            });
+          }
         }
 
-        // 2. Process Contact sheet for Repeater guests
-        if (contactRes?.values?.length > 1) {
-          const cHeaders = contactRes.values[0] as string[];
-          const idIdx = cHeaders.findIndex(h => h?.trim().toUpperCase() === 'ID' || h?.trim().toUpperCase() === 'CONTACT ID');
+        // 2. Process User sheet for Repeater guests
+        if (userRes?.values?.length > 1) {
+          const cHeaders = userRes.values[0] as string[];
+          const idIdx = cHeaders.findIndex(h => h?.trim().toUpperCase() === 'ID' || h?.trim().toUpperCase() === 'CONTACT ID' || h?.trim().toUpperCase() === 'KTA ID');
           const nameIdx = cHeaders.findIndex(h => h?.trim().toUpperCase() === 'NAME');
           const usecaseIdx = cHeaders.findIndex(h => h?.trim().toUpperCase() === 'USECASE');
-          const unitIdx = cHeaders.findIndex(h => h?.trim().toUpperCase() === 'UNIT' || h?.trim().toUpperCase() === 'UNIT ID');
+          const roleIdx = cHeaders.findIndex(h => h?.trim().toUpperCase() === 'ROLE' || h?.trim().toUpperCase() === 'ROLES');
+          const unitIdx = cHeaders.findIndex(h => h?.trim().toUpperCase() === 'UNIT BUSINESS' || h?.trim().toUpperCase() === 'UNIT' || h?.trim().toUpperCase() === 'UNIT_BUSINESS' || h?.trim().toUpperCase() === 'UNIT ID');
           const emailIdx = cHeaders.findIndex(h => h?.trim().toUpperCase() === 'EMAIL');
-          const phoneIdx = cHeaders.findIndex(h => h?.trim().toUpperCase() === 'PHONE' || h?.trim().toUpperCase() === 'TELEPON' || h?.trim().toUpperCase() === 'NO HP');
+          const phoneIdx = cHeaders.findIndex(h => h?.trim().toUpperCase() === 'PHONE' || h?.trim().toUpperCase() === 'TELEPON' || h?.trim().toUpperCase() === 'TELP' || h?.trim().toUpperCase() === 'NO HP');
+          const photoKtpIdx = cHeaders.findIndex(h => {
+            const norm = h?.trim().toUpperCase().replace(/[\s._-]+/g, '') || '';
+            return norm === 'PHOTOKTP' || norm === 'PHOTOID' || norm === 'FOTOKTP' || norm === 'KTPPHOTO';
+          });
 
-          const fetched = contactRes.values.slice(1).map((row, i) => {
-            const id = idIdx > -1 ? row[idIdx]?.trim() : `contact-${i}`;
+          const fetched = userRes.values.slice(1).map((row, i) => {
+            const id = idIdx > -1 ? row[idIdx]?.trim() : `user-${i}`;
             const name = nameIdx > -1 ? row[nameIdx]?.trim() : '';
             const usecase = usecaseIdx > -1 ? row[usecaseIdx]?.trim() : '';
             const unit = unitIdx > -1 ? row[unitIdx]?.trim() : '';
+            const role = roleIdx > -1 ? row[roleIdx]?.trim() : '';
             const em = emailIdx > -1 ? row[emailIdx]?.trim() : '';
             const ph = phoneIdx > -1 ? row[phoneIdx]?.trim() : '';
+            const photoKtp = photoKtpIdx > -1 ? row[photoKtpIdx]?.trim() : '';
 
-            return { id, name, usecase, unit, email: em, phone: ph };
-          }).filter(c => c.name && c.usecase?.toUpperCase() === 'GUEST' && c.unit?.toUpperCase() === 'UNT19');
+            return { id, name, usecase, role, unit, email: em, phone: ph, photoKtp };
+          }).filter(c => c.name && c.role?.toUpperCase() === 'CLIENT' && c.usecase?.toUpperCase() === 'GUEST');
 
           setContactList(fetched);
         }
@@ -381,7 +522,15 @@ export function LghForm() {
     if (!checkIn) return false;
     const targetDate = parseDate(checkIn);
     if (!targetDate) return false;
-    const targetTime = targetDate.getTime();
+
+    const witaNow = getWitaParts();
+    const witaTodayStr = `${witaNow.year}-${String(witaNow.month).padStart(2, '0')}-${String(witaNow.day).padStart(2, '0')}`;
+    const isTargetTodayWita = checkIn === witaTodayStr;
+
+    const tYear = targetDate.getFullYear();
+    const tMonth = targetDate.getMonth();
+    const tDay = targetDate.getDate();
+    const targetDayTime = new Date(tYear, tMonth, tDay).getTime();
 
     return existingTransactions.some(t => {
       if (!t.room) return false;
@@ -392,26 +541,63 @@ export function LghForm() {
       const end = parseDate(t.checkOut);
       if (!start || !end) return false;
 
-      const startTime = new Date(start).setHours(0, 0, 0, 0);
-      const endTime = new Date(end).setHours(23, 59, 59, 999);
-      return targetTime >= startTime && targetTime <= endTime;
+      const sYear = start.getFullYear();
+      const sMonth = start.getMonth();
+      const sDay = start.getDate();
+      const startDayTime = new Date(sYear, sMonth, sDay).getTime();
+
+      const eYear = end.getFullYear();
+      const eMonth = end.getMonth();
+      const eDay = end.getDate();
+      const endDayTime = new Date(eYear, eMonth, eDay).getTime();
+
+      if (targetDayTime < startDayTime || targetDayTime > endDayTime) {
+        return false;
+      }
+
+      if (targetDayTime < endDayTime) {
+        return true;
+      }
+
+      // Check-out date: if today in WITA and hour >= 12:00 WITA, previous guest already checked out.
+      // We also check for '24' just in case some engines format 00:00 as 24:00
+      if (isTargetTodayWita) {
+        if (witaNow.hour >= 12 && witaNow.hour !== 24) {
+          return false;
+        }
+        return true;
+      }
+
+      // If the target check-in is in the future or past, the room is available for check-in on that same day
+      // because check-in time (14:00) is after check-out time (12:00).
+      return false;
     });
   };
 
   // Find info about Repeater Guest if selected
   const activeRepeaterInfo = contactList.find(c => c.id === selectedRepeaterId);
 
+  // Find info about Extend stay if selected
+  const activeExtendTrans = existingTransactions.find(t => t.id === selectedExtendId);
+  const extendContactInfo = contactList.find(c => c.id === activeExtendTrans?.kontak || c.name.toLowerCase() === activeExtendTrans?.kontak?.toLowerCase());
+
   // Name / Guest details to write
   const activeGuestNameStr = guestType === 'Repeater' 
     ? (activeRepeaterInfo?.name || '') 
+    : guestType === 'Extend'
+    ? (namaTamu || extendContactInfo?.name || activeExtendTrans?.kontak || '')
     : namaTamu;
 
   const activeGuestEmailStr = guestType === 'Repeater'
     ? (activeRepeaterInfo?.email || '')
+    : guestType === 'Extend'
+    ? (email || extendContactInfo?.email || activeExtendTrans?.email || '')
     : email;
 
   const activeGuestPhoneStr = guestType === 'Repeater'
     ? (activeRepeaterInfo?.phone || '')
+    : guestType === 'Extend'
+    ? (phone || extendContactInfo?.phone || activeExtendTrans?.phone || '')
     : phone;
 
   const calculatedAmount = Number(price || 0) * duration;
@@ -496,25 +682,7 @@ export function LghForm() {
     });
   };
 
-  // Handle Main Form Submission
-  const handleSubmitForm = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (!selectedRoom) {
-      alert('Silakan pilih nomor Kamar (Room) terlebih dahulu!');
-      return;
-    }
-
-    if (guestType === 'Repeater' && !selectedRepeaterId) {
-      alert('Silakan pilih salah satu data tamu Repeater!');
-      return;
-    }
-
-    if ((payment === 'Transfer' || payment === 'Qris') && !buktiTransferFile) {
-      alert(`Silakan lampirkan Bukti ${payment === 'Qris' ? 'Pembayaran QRIS' : 'Transfer'} terlebih dahulu!`);
-      return;
-    }
-
+  const submitData = async (printJpegUrl: string = '') => {
     try {
       setSubmitting(true);
 
@@ -548,6 +716,7 @@ export function LghForm() {
         const pdfFile = generateGuestRegPdfFile(
           lghId,
           activeGuestNameStr,
+          guestType,
           noId,
           activeGuestPhoneStr,
           activeGuestEmailStr,
@@ -572,20 +741,24 @@ export function LghForm() {
       }
 
       // Guest metadata and ID Mapping
-      const resolvedContactId = guestType === 'Repeater' ? selectedRepeaterId : newContactId;
+      const resolvedContactId = guestType === 'Repeater' 
+        ? selectedRepeaterId 
+        : guestType === 'Extend'
+          ? (extendContactInfo?.id || activeExtendTrans?.kontak || newContactId)
+          : newContactId;
 
-      // 2. Fetch Contact Table Headers to append Contact row dynamically
-      const contactSheetRes = await getSheetData('Contact!A1:Z1').catch(() => null);
+      // 2. Fetch User Table Headers to append User row dynamically
+      const userSheetRes = await getSheetData('User!A1:Z1').catch(() => null);
       if (guestType === 'New Guest') {
-        let contactHeaders = ['ID', 'Type', 'Usecase', 'Unit', 'Name', 'Email', 'Phone', 'No.ID', 'Photo ID', 'Sign'];
-        if (contactSheetRes?.values?.length > 0) {
-          contactHeaders = contactSheetRes.values[0] as string[];
+        let userHeaders = ['ID', 'Role', 'Usecase', 'Unit', 'Name', 'Email', 'Phone', 'No. KTP', 'Photo KTP', 'TTD', 'Avail'];
+        if (userSheetRes?.values?.length > 0) {
+          userHeaders = userSheetRes.values[0] as string[];
         }
 
-        const newContactRow = new Array(contactHeaders.length).fill('');
-        const setContactCol = (headerName: string, value: any) => {
+        const newUserRow = new Array(userHeaders.length).fill('');
+        const setUserCol = (headerName: string, value: any) => {
           const normName = headerName.trim().toUpperCase().replace(/[\s._-]+/g, '');
-          const idx = contactHeaders.findIndex(h => {
+          const idx = userHeaders.findIndex(h => {
             if (!h) return false;
             const normH = h.trim().toUpperCase().replace(/[\s._-]+/g, '');
             
@@ -593,22 +766,29 @@ export function LghForm() {
             if (normH === normName) return true;
             
             // Specific mappings for potential variants
-            if (normName === 'ID' && (normH === 'ID' || normH === 'CONTACTID' || normH === 'IDCONTACT')) {
+            if (normName === 'ID' && (normH === 'ID' || normH === 'CONTACTID' || normH === 'IDCONTACT' || normH === 'KTAID')) {
+              return true;
+            }
+            if (normName === 'ROLE' && (normH === 'ROLE' || normH === 'ROLES' || normH === 'TYPE' || normH === 'TIPE')) {
               return true;
             }
             if (normName === 'NAME' && (normH === 'NAME' || normH === 'NAMA' || normH === 'NAMALENGKAP')) {
               return true;
             }
-            if (normName === 'PHONE' && (normH === 'PHONE' || normH === 'TELEPON' || normH === 'NOHP' || normH === 'NO.HP' || normH === 'NO_HP')) {
+            if (normName === 'EMAIL' && (normH === 'EMAIL' || normH === 'ALAMATEMAIL')) {
               return true;
             }
-            if (normName === 'NOID' && (normH === 'NOID' || normH === 'NO.ID' || normH === 'NO_ID' || normH === 'IDENTITYNO' || normH === 'KTP')) {
+            if (normName === 'PHONE' && (normH === 'PHONE' || normH === 'TELEPON' || normH === 'NOHP' || normH === 'NO.HP' || normH === 'TELP')) {
               return true;
             }
-            if (normName === 'PHOTOID' && (normH === 'PHOTOID' || normH === 'PHOTO ID' || normH === 'FOTOID' || normH === 'FOTOKTP' || normH === 'KTPPHOTO')) {
+            if (normName === 'NOKTP' && (normH === 'NOKTP' || normH === 'NO.KTP' || normH === 'NO_KTP' || normH === 'IDENTITYNO' || normH === 'KTP' || normH === 'NOID')) {
               return true;
             }
-            if (normName === 'SIGN' && (normH === 'SIGN' || normH === 'TANDATANGAN' || normH === 'SIGNATURE')) {
+            if (normName === 'PHOTOKTP') {
+              if (normH === 'PHOTOKTP' || normH === 'FOTOKTP' || normH === 'KTPPHOTO' || normH === 'PHOTOID') return true;
+              return false; // strictly match only equivalents, do not fallback to PHOTO
+            }
+            if ((normName === 'SIGN' || normName === 'TTD') && (normH === 'SIGN' || normH === 'TANDATANGAN' || normH === 'SIGNATURE' || normH === 'TTD')) {
               return true;
             }
             if (normName === 'USECASE' && (normH === 'USECASE' || normH === 'KATEGORI')) {
@@ -621,22 +801,23 @@ export function LghForm() {
             return false;
           });
           if (idx > -1) {
-            newContactRow[idx] = value;
+            newUserRow[idx] = value;
           }
         };
 
-        setContactCol('ID', resolvedContactId);
-        setContactCol('Type', 'Client');
-        setContactCol('Usecase', 'Guest');
-        setContactCol('Unit', 'UNT19');
-        setContactCol('Name', namaTamu);
-        setContactCol('Email', email);
-        setContactCol('Phone', phone);
-        setContactCol('No.ID', noId);
-        setContactCol('Photo ID', photoIdUrl);
-        setContactCol('Sign', signatureUrl);
+        setUserCol('ID', resolvedContactId);
+        setUserCol('Role', 'Client');
+        setUserCol('Usecase', 'Guest');
+        setUserCol('Unit', 'UNT19');
+        setUserCol('Name', namaTamu);
+        setUserCol('Email', email);
+        setUserCol('Phone', phone);
+        setUserCol('No. KTP', noId);
+        setUserCol('Photo KTP', photoIdUrl);
+        setUserCol('AVAIL', 'CNT');
+        setUserCol('TTD', signatureUrl);
 
-        await appendSheetData('Contact!A1:Z', [newContactRow]);
+        await appendSheetData('User!A1:Z', [newUserRow]);
       } else {
         // If Repeater, upload signature to match sign url if drew
         if (signatureUrl) {
@@ -646,7 +827,7 @@ export function LghForm() {
 
       // 3. Fetch Lovissa Guest House headers to append Transaction row dynamically
       const lovissaSheetRes = await getSheetData('Lovissa Guest House!A1:Z1').catch(() => null);
-      let lovissaHeaders = ['ID', 'Type', 'Check In', 'Dur', 'Check out', 'Room', 'Name', 'Price', 'Amount', 'Payment', 'Bukti Transfer'];
+      let lovissaHeaders = ['ID', 'Type', 'Check In', 'Dur', 'Check out', 'Room', 'Kontak', 'Price', 'Amount', 'Payment', 'Bukti Transfer', 'Photo ID', 'Email', 'Phone'];
       if (lovissaSheetRes?.values?.length > 0) {
         lovissaHeaders = lovissaSheetRes.values[0] as string[];
       }
@@ -677,7 +858,7 @@ export function LghForm() {
           if (normName === 'ROOM' && (normH === 'ROOM' || normH === 'KAMAR' || normH === 'NOROOM')) {
             return true;
           }
-          if (normName === 'NAME' && (normH === 'NAME' || normH === 'NAMA' || normH === 'CONTACTID')) {
+          if (normName === 'KONTAK' && (normH === 'KONTAK' || normH === 'CONTACT' || normH === 'CONTACTID')) {
             return true;
           }
           if (normName === 'PRICE' && (normH === 'PRICE' || normH === 'HARGA')) {
@@ -698,6 +879,21 @@ export function LghForm() {
           if (normName === 'GUESTREG' && (normH === 'GUESTREG' || normH === 'GUEST REG' || normH === 'GUESTREGISTRATION' || normH === 'REGISRATIONURL' || normH === 'REGISTRASIPDF' || normH === 'SURATREGISTAMU')) {
             return true;
           }
+          if (normName === 'PRINT' && (normH === 'PRINT' || normH === 'CETAK' || normH === 'GAMBARPRINT' || normH === 'GAMBARREGISTRASI')) {
+            return true;
+          }
+          if (normName === 'PHOTOID' && (normH === 'PHOTOID' || normH === 'PHOTO ID' || normH === 'FOTOID' || normH === 'PHOTOKTP' || normH === 'KTPPHOTO')) {
+            return true;
+          }
+          if (normName === 'EMAIL' && (normH === 'EMAIL' || normH === 'ALAMATEMAIL')) {
+            return true;
+          }
+          if (normName === 'PHONE' && (normH === 'PHONE' || normH === 'TELEPON' || normH === 'NOHP' || normH === 'NO.HP' || normH === 'TELP')) {
+            return true;
+          }
+          if (normName === 'BOOKINGSOURCE' && (normH === 'BOOKINGSOURCE' || normH === 'SOURCE' || normH === 'CHANNEL' || normH === 'OTA' || normH === 'SUMBER' || normH === 'BOOKING SOURCE')) {
+            return true;
+          }
 
           // Fallback for fields longer than 2 characters
           if (normName.length > 2 && normH.includes(normName)) return true;
@@ -714,18 +910,49 @@ export function LghForm() {
       setLovissaCol('Check In', formattedCheckInStr);
       setLovissaCol('Dur', duration);
       setLovissaCol('Check out', checkOutStr);
+      setLovissaCol('Booking Source', bookingSource);
       setLovissaCol('Room', `Room ${selectedRoom}`);
-      setLovissaCol('Name', resolvedContactId);
+      setLovissaCol('Kontak', resolvedContactId);
       setLovissaCol('Price', Number(price || 0));
       setLovissaCol('Amount', calculatedAmount);
       setLovissaCol('Payment', payment);
       setLovissaCol('Bukti Transfer', buktiTransferUrl);
       setLovissaCol('Keterangan', keterangan);
-      setLovissaCol('Guest Reg', guestRegPdfUrl);
+      setLovissaCol('Guest Reg', '');
+      
+      // additional user info
+      if (guestType === 'New Guest') {
+         setLovissaCol('Photo ID', photoIdUrl);
+         setLovissaCol('Email', email);
+         setLovissaCol('Phone', phone);
+      } else if (guestType === 'Repeater' && activeRepeaterInfo) {
+         setLovissaCol('Email', activeRepeaterInfo.email);
+         setLovissaCol('Phone', activeRepeaterInfo.phone);
+         setLovissaCol('Photo ID', activeRepeaterInfo.photoKtp || '');
+      } else if (guestType === 'Extend') {
+         setLovissaCol('Email', activeGuestEmailStr);
+         setLovissaCol('Phone', activeGuestPhoneStr);
+         setLovissaCol('Photo ID', extendContactInfo?.photoKtp || activeExtendTrans?.['Photo ID'] || activeExtendTrans?.photoId || '');
+      }
+
+      if (printJpegUrl) {
+        setLovissaCol('Print', printJpegUrl);
+      }
 
       await appendSheetData('Lovissa Guest House!A1:Z', [newLovissaRow]);
 
+      // Log Activity to Newsfeed
+      const submitterEmail = localStorage.getItem('mtask_user_email') || 'unknown@kipapola.com';
+      const submitterName = localStorage.getItem('mtask_user_name') || (submitterEmail.includes('@') ? submitterEmail.split('@')[0] : submitterEmail) || 'User';
+
+      logActivity(
+        "Form",
+        "Check In LGH",
+        `${submitterName} mencatat Check In Room ${selectedRoom} (${activeGuestNameStr || "Tamu"}) | Rp.${Number(calculatedAmount || 0).toLocaleString("id-ID")}`
+      );
+
       alert('Data Registrasi Lovissa Guest House berhasil dikirim!');
+      setShowRegModal(false);
       navigate(-1);
     } catch (err: any) {
       console.error(err);
@@ -735,8 +962,124 @@ export function LghForm() {
     }
   };
 
-  const handlePrint = () => {
-    window.print();
+  const handleValidation = () => {
+    if (!selectedRoom) {
+      alert('Silakan pilih nomor Kamar (Room) terlebih dahulu!');
+      return false;
+    }
+    if (guestType === 'Repeater' && !selectedRepeaterId) {
+      alert('Silakan pilih salah satu data tamu Repeater!');
+      return false;
+    }
+    if (guestType === 'Extend' && !selectedExtendId && !namaTamu) {
+      alert('Silakan pilih atau lengkapi data tamu untuk extend!');
+      return false;
+    }
+    if (guestType === 'New Guest' && !namaTamu) {
+      alert('Silakan isi nama lengkap tamu!');
+      return false;
+    }
+    if ((payment === 'Transfer' || payment === 'Qris') && !buktiTransferFile) {
+      alert(`Silakan lampirkan Bukti ${payment === 'Qris' ? 'Pembayaran QRIS' : 'Transfer'} terlebih dahulu!`);
+      return false;
+    }
+    return true;
+  };
+
+  const handleSubmitForm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (handleValidation()) {
+      setSubmitting(true);
+      try {
+        let capturedJpegUrl = '';
+        const el = document.getElementById('printable-area');
+        if (el) {
+          // Use html-to-image to capture the element
+          const dataUrl = await toJpeg(el, { quality: 0.8, backgroundColor: '#ffffff', pixelRatio: 2 });
+          const resBlob = await fetch(dataUrl).then(res => res.blob());
+          if (resBlob) {
+            const file = new File([resBlob], `guest_registration_print_${Date.now()}.jpg`, { type: 'image/jpeg' });
+            const res = await DriveService.uploadFile(file);
+            capturedJpegUrl = res.url;
+          }
+        }
+        await submitData(capturedJpegUrl);
+      } catch (err: any) {
+        console.error(err);
+        alert('Gagal memproses print dan pengiriman data: ' + err.message);
+        setSubmitting(false);
+      }
+    }
+  };
+
+  const handleAddBookingSource = () => {
+    if (!newBookingSourceName.trim()) {
+      alert("Nama sumber tidak boleh kosong");
+      return;
+    }
+    const val = newBookingSourceName.trim();
+    if (!bookingSources.some((s) => s.toLowerCase() === val.toLowerCase())) {
+      const updated = [...bookingSources, val];
+      setBookingSources(updated);
+      try {
+        const customOnly = updated.filter(
+          (s) => !DEFAULT_BOOKING_SOURCES.includes(s),
+        );
+        localStorage.setItem(
+          "lgh_custom_booking_sources",
+          JSON.stringify(customOnly),
+        );
+
+        // Remove from deleted list if it's there
+        const savedDeleted = localStorage.getItem('lgh_deleted_booking_sources');
+        if (savedDeleted) {
+          let deletedSources: string[] = JSON.parse(savedDeleted);
+          deletedSources = deletedSources.filter(d => d.toLowerCase() !== val.toLowerCase());
+          localStorage.setItem('lgh_deleted_booking_sources', JSON.stringify(deletedSources));
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    setBookingSource(val);
+    setShowAddBookingSourceModal(false);
+    setNewBookingSourceName("");
+  };
+
+  const handleDeleteBookingSource = (sourceToRemove: string) => {
+    if (DEFAULT_BOOKING_SOURCES.includes(sourceToRemove)) {
+      alert("Sumber bawaan tidak dapat dihapus.");
+      return;
+    }
+
+    const updated = bookingSources.filter(s => s !== sourceToRemove);
+    setBookingSources(updated);
+
+    if (bookingSource === sourceToRemove) {
+      setBookingSource(updated[0] || 'Booking.com');
+    }
+
+    try {
+      const customOnly = updated.filter(
+        (s) => !DEFAULT_BOOKING_SOURCES.includes(s),
+      );
+      localStorage.setItem(
+        "lgh_custom_booking_sources",
+        JSON.stringify(customOnly),
+      );
+
+      // add to deleted list
+      let deletedSources: string[] = [];
+      const savedDeleted = localStorage.getItem('lgh_deleted_booking_sources');
+      if (savedDeleted) deletedSources = JSON.parse(savedDeleted);
+      
+      if (!deletedSources.some(d => d.toLowerCase() === sourceToRemove.toLowerCase())) {
+        deletedSources.push(sourceToRemove);
+        localStorage.setItem('lgh_deleted_booking_sources', JSON.stringify(deletedSources));
+      }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   return (
@@ -763,7 +1106,6 @@ export function LghForm() {
           {lghId}
         </div>
       </header>
-
       {loading ? (
         <div className="flex flex-col items-center justify-center py-20 gap-3 text-sm text-gray-500">
           <div className="w-8 h-8 rounded-full border-4 border-indigo-400 border-t-transparent animate-spin" />
@@ -801,36 +1143,52 @@ export function LghForm() {
               </div>
             </div>
 
-            {/* Check In Date & Duration */}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5 font-sans">
-                  Check In <span className="text-red-500">*</span>
-                </label>
-                <div className="relative">
-                  <Calendar className="absolute left-3.5 top-3 w-4 h-4 text-gray-400 pointer-events-none" />
-                  <input
-                    required
-                    type="date"
-                    value={checkIn}
-                    onChange={(e) => setCheckIn(e.target.value)}
-                    className="w-full bg-gray-50 border border-gray-200 rounded-xl pl-10 pr-3 py-2.5 text-xs font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 font-sans cursor-pointer"
-                  />
-                </div>
+            {/* Check In Date */}
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5 font-sans">
+                Check In <span className="text-red-500">*</span>
+              </label>
+              <div className="relative">
+                <Calendar className="absolute left-3.5 top-3 w-4 h-4 text-gray-400 pointer-events-none" />
+                <input
+                  required
+                  type="date"
+                  value={checkIn}
+                  onChange={(e) => setCheckIn(e.target.value)}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl pl-10 pr-3 py-2.5 text-xs font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 font-sans cursor-pointer"
+                />
               </div>
+            </div>
 
-              <div>
-                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5 font-sans">
-                  Durasi ({type === 'Daily' ? 'Days' : type === 'Weekly' ? 'Weeks' : 'Month'}) <span className="text-red-500">*</span>
-                </label>
+            {/* Duration */}
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5 font-sans">
+                Durasi ({type === 'Daily' ? 'Days' : type === 'Weekly' ? 'Weeks' : 'Month'}) <span className="text-red-500">*</span>
+              </label>
+              <div className="flex items-center bg-gray-50 border border-gray-200 rounded-xl p-1">
+                <button
+                  type="button"
+                  onClick={() => setDuration((prev) => Math.max(1, prev - 1))}
+                  disabled={duration <= 1}
+                  className="w-10 h-9 flex items-center justify-center bg-white border border-gray-200 rounded-lg text-gray-700 hover:bg-gray-100 hover:text-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-all active:scale-95 shadow-sm font-bold"
+                >
+                  <Minus className="w-4 h-4" />
+                </button>
                 <input
                   required
                   type="number"
                   min="1"
                   value={duration}
                   onChange={(e) => setDuration(Math.max(1, parseInt(e.target.value) || 1))}
-                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-2.5 text-xs font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 font-sans"
+                  className="flex-1 bg-transparent text-center text-xs font-bold text-gray-800 focus:outline-none font-sans py-1.5"
                 />
+                <button
+                  type="button"
+                  onClick={() => setDuration((prev) => prev + 1)}
+                  className="w-10 h-9 flex items-center justify-center bg-white border border-gray-200 rounded-lg text-gray-700 hover:bg-gray-100 hover:text-indigo-600 cursor-pointer transition-all active:scale-95 shadow-sm font-bold"
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
               </div>
             </div>
 
@@ -854,15 +1212,70 @@ export function LghForm() {
                 {Array.from({ length: 12 }, (_, i) => i + 1).map((roomNum) => {
                   const isOccupied = checkRoomOccupancy(roomNum);
                   const isSelected = selectedRoom === roomNum;
+                  const isExtendMode = guestType === 'Extend';
+                  const isExtendRoomMatch = isExtendMode && selectedExtendId && (() => {
+                    const trans = existingTransactions.find(t => t.id === selectedExtendId);
+                    if (trans && trans.room) {
+                      const match = String(trans.room).match(/\d+/);
+                      return match && parseInt(match[0], 10) === roomNum;
+                    }
+                    return false;
+                  })();
+
+                  let isDisabled = false;
+                  if (guestType === 'Extend') {
+                    if (selectedExtendId) {
+                      isDisabled = !isExtendRoomMatch;
+                    } else {
+                      isDisabled = !isOccupied;
+                    }
+                  } else {
+                    isDisabled = isOccupied;
+                  }
+                  
+                  // Auto-fill logic when selecting a room manually in extend mode
+                  const handleRoomClick = () => {
+                    setSelectedRoom(roomNum);
+                    
+                    if (isExtendMode && isOccupied) {
+                      // Try to auto-select the latest transaction for this room if it exists
+                      const latestTransForRoom = existingTransactions.slice().reverse().find(t => {
+                        if (!t.room) return false;
+                        const match = String(t.room).match(/\d+/);
+                        return match && parseInt(match[0], 10) === roomNum;
+                      });
+                      
+                      if (latestTransForRoom) {
+                        setSelectedExtendId(latestTransForRoom.id);
+                        const outDate = parseDate(latestTransForRoom.checkOut);
+                        if (outDate) {
+                          const y = outDate.getFullYear();
+                          const m = String(outDate.getMonth() + 1).padStart(2, '0');
+                          const d = String(outDate.getDate()).padStart(2, '0');
+                          setCheckIn(`${y}-${m}-${d}`);
+                        }
+                        const cInfo = contactList.find(c => c.id === latestTransForRoom.kontak || c.name.toLowerCase() === latestTransForRoom.kontak?.toLowerCase());
+                        setNamaTamu(cInfo?.name || latestTransForRoom.kontak || '');
+                        if (cInfo?.email || latestTransForRoom.email) setEmail(cInfo?.email || latestTransForRoom.email);
+                        if (cInfo?.phone || latestTransForRoom.phone) setPhone(cInfo?.phone || latestTransForRoom.phone);
+                        if (cInfo?.photoKtp || latestTransForRoom.noId) setNoId(latestTransForRoom.noId || '');
+                        if (latestTransForRoom.price) setPrice(String(latestTransForRoom.price).replace(/[^0-9]/g, ''));
+                        if (latestTransForRoom.bookingSource) setBookingSource(latestTransForRoom.bookingSource);
+                        if (latestTransForRoom.type && (latestTransForRoom.type === 'Daily' || latestTransForRoom.type === 'Weekly' || latestTransForRoom.type === 'Monthly')) {
+                          setType(latestTransForRoom.type as any);
+                        }
+                      }
+                    }
+                  };
 
                   return (
                     <button
                       key={roomNum}
                       type="button"
-                      disabled={isOccupied}
-                      onClick={() => setSelectedRoom(roomNum)}
+                      disabled={isDisabled}
+                      onClick={handleRoomClick}
                       className={`aspect-square rounded-xl border font-mono text-xs font-extrabold flex flex-col items-center justify-center p-1 transition-all duration-150 ${
-                        isOccupied 
+                        isDisabled 
                           ? 'bg-gray-100 text-gray-400 border-gray-200 line-through cursor-not-allowed'
                           : isSelected
                           ? 'bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-600/10 scale-102 font-bold cursor-pointer'
@@ -871,7 +1284,7 @@ export function LghForm() {
                     >
                       <span>{roomNum}</span>
                       <span className="text-[8px] scale-90 mt-0.5 font-sans font-normal uppercase">
-                        {isOccupied ? 'Okp' : 'Vac'}
+                        {isOccupied && (isExtendRoomMatch || (isExtendMode && isSelected)) ? 'Ext' : isOccupied ? 'Okp' : 'Vac'}
                       </span>
                     </button>
                   );
@@ -902,7 +1315,7 @@ export function LghForm() {
                 Guest Type <span className="text-red-500">*</span>
               </label>
               <div className="flex bg-gray-100 p-1 rounded-xl">
-                {(['New Guest', 'Repeater'] as const).map((gt) => (
+                {(['New Guest', 'Repeater', 'Extend'] as const).map((gt) => (
                   <button
                     key={gt}
                     type="button"
@@ -919,6 +1332,148 @@ export function LghForm() {
               </div>
             </div>
 
+            {/* EXTEND SELECT FLOW */}
+            {guestType === 'Extend' && (
+              <div className="space-y-3.5">
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5 font-sans">
+                    Pilih Tamu / Kamar untuk Di-Extend <span className="text-red-500">*</span>
+                  </label>
+                  {existingTransactions.length === 0 ? (
+                    <p className="text-xs text-amber-600 bg-amber-50 p-2.5 rounded-lg font-bold">
+                      Belum ada data transaksi aktif Lovissa Guest House.
+                    </p>
+                  ) : (
+                    <select
+                      value={selectedExtendId}
+                      onChange={(e) => {
+                        const selId = e.target.value;
+                        setSelectedExtendId(selId);
+                        const trans = existingTransactions.find(t => t.id === selId);
+                        if (trans) {
+                          const rMatch = trans.room ? String(trans.room).match(/\d+/) : null;
+                          if (rMatch) {
+                            setSelectedRoom(parseInt(rMatch[0], 10));
+                          }
+                          const outDate = parseDate(trans.checkOut);
+                          if (outDate) {
+                            const y = outDate.getFullYear();
+                            const m = String(outDate.getMonth() + 1).padStart(2, '0');
+                            const d = String(outDate.getDate()).padStart(2, '0');
+                            setCheckIn(`${y}-${m}-${d}`);
+                          }
+                          const cInfo = contactList.find(c => c.id === trans.kontak || c.name.toLowerCase() === trans.kontak?.toLowerCase());
+                          setNamaTamu(cInfo?.name || trans.kontak || '');
+                          if (cInfo?.email || trans.email) setEmail(cInfo?.email || trans.email);
+                          if (cInfo?.phone || trans.phone) setPhone(cInfo?.phone || trans.phone);
+                          if (cInfo?.photoKtp || trans.noId) setNoId(trans.noId || '');
+                          if (trans.price) setPrice(String(trans.price).replace(/[^0-9]/g, ''));
+                          if (trans.bookingSource) setBookingSource(trans.bookingSource);
+                          if (trans.type && (trans.type === 'Daily' || trans.type === 'Weekly' || trans.type === 'Monthly')) {
+                            setType(trans.type as any);
+                          }
+                        }
+                      }}
+                      className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-xs font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 font-sans cursor-pointer"
+                    >
+                      <option value="">-- Pilih Tamu / Kamar yang Diperpanjang --</option>
+                      {(() => {
+                        const witaNow = getWitaParts();
+                        const todayTime = new Date(witaNow.year, witaNow.month - 1, witaNow.day).getTime();
+                        
+                        const activeExtends = existingTransactions.slice().reverse().filter(t => {
+                           const end = parseDate(t.checkOut);
+                           if (!end) return false;
+                           const endDayTime = new Date(end.getFullYear(), end.getMonth(), end.getDate()).getTime();
+                           
+                           if (endDayTime < todayTime) return false;
+
+                           const tRoomMatch = t.room ? String(t.room).match(/\d+/) : null;
+                           if (tRoomMatch) {
+                              const roomNum = parseInt(tRoomMatch[0], 10);
+                              const latestForRoom = existingTransactions.slice().reverse().find(tr => {
+                                const trMatch = tr.room ? String(tr.room).match(/\d+/) : null;
+                                return trMatch && parseInt(trMatch[0], 10) === roomNum;
+                              });
+                              if (latestForRoom?.id !== t.id) return false;
+                           }
+                           
+                           return true;
+                        });
+
+                        if (activeExtends.length === 0) {
+                          return <option value="" disabled>Belum ada kamar yang terisi saat ini</option>;
+                        }
+
+                        return activeExtends.map((t, idx) => {
+                          const cInfo = contactList.find(c => c.id === t.kontak || c.name.toLowerCase() === t.kontak?.toLowerCase());
+                          const gName = cInfo?.name || t.kontak || 'Tamu';
+                          return (
+                            <option key={`${t.id}-${idx}`} value={t.id}>
+                              {t.room || 'Room'} - {gName} (Check Out: {t.checkOut || '-'})
+                            </option>
+                          );
+                        });
+                      })()}
+                    </select>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5 font-sans">
+                    Nama Tamu <span className="text-red-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <User className="absolute left-3.5 top-3 w-4 h-4 text-gray-400" />
+                    <input
+                      required
+                      readOnly
+                      type="text"
+                      placeholder="Nama lengkap tamu..."
+                      value={namaTamu}
+                      onChange={(e) => setNamaTamu(e.target.value)}
+                      className="w-full bg-gray-100 border border-gray-200 rounded-xl pl-10 pr-3 py-2.5 text-xs font-bold text-gray-500 focus:outline-none cursor-not-allowed font-sans"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5 font-sans">
+                      WhatsApp / No. HP
+                    </label>
+                    <div className="relative">
+                      <Phone className="absolute left-3.5 top-3 w-4 h-4 text-gray-400" />
+                      <input
+                        readOnly
+                        type="tel"
+                        placeholder="0812..."
+                        value={phone}
+                        onChange={(e) => setPhone(e.target.value)}
+                        className="w-full bg-gray-100 border border-gray-200 rounded-xl pl-10 pr-3 py-2.5 text-xs font-bold text-gray-500 focus:outline-none cursor-not-allowed font-sans"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5 font-sans">
+                      Email
+                    </label>
+                    <div className="relative">
+                      <Mail className="absolute left-3.5 top-3 w-4 h-4 text-gray-400" />
+                      <input
+                        readOnly
+                        type="email"
+                        placeholder="email@tamu.com"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        className="w-full bg-gray-100 border border-gray-200 rounded-xl pl-10 pr-3 py-2.5 text-xs font-bold text-gray-500 focus:outline-none cursor-not-allowed font-sans"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* REPEATER SELECT FLOW */}
             {guestType === 'Repeater' && (
               <div>
@@ -927,7 +1482,7 @@ export function LghForm() {
                 </label>
                 {contactList.length === 0 ? (
                   <p className="text-xs text-amber-600 bg-amber-50 p-2.5 rounded-lg font-bold">
-                    Tidak ditemukan data tamu contact yang sesuai (Guest di Unit UNT19).
+                    Tidak ditemukan data tamu yang sesuai (Role: Client, Usecase: Guest).
                   </p>
                 ) : (
                   <select
@@ -936,9 +1491,9 @@ export function LghForm() {
                     className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-xs font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 font-sans cursor-pointer"
                   >
                     <option value="">-- Pilih Tamu Repeater --</option>
-                    {contactList.map((contact) => (
-                      <option key={contact.id} value={contact.id}>
-                        {contact.name} ({contact.phone || contact.email || contact.id})
+                    {contactList.map((contact, idx) => (
+                      <option key={`${contact.id}-${idx}`} value={contact.id}>
+                        {contact.name}
                       </option>
                     ))}
                   </select>
@@ -951,6 +1506,17 @@ export function LghForm() {
                     <p className="text-gray-600">Usecase / Unit: <span className="font-bold">{activeRepeaterInfo.usecase}</span> / {activeRepeaterInfo.unit}</p>
                     {activeRepeaterInfo.email && <p className="text-gray-600">Email: {activeRepeaterInfo.email}</p>}
                     {activeRepeaterInfo.phone && <p className="text-gray-600">No HP: {activeRepeaterInfo.phone}</p>}
+                    {activeRepeaterInfo.photoKtp && (
+                      <div className="mt-2">
+                        <p className="text-gray-600">Photo KTP:</p>
+                        <img 
+                          src={activeRepeaterInfo.photoKtp} 
+                          alt="KTP" 
+                          className="h-20 w-auto object-cover rounded mt-1 border border-indigo-200" 
+                          referrerPolicy="no-referrer" 
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -1089,6 +1655,44 @@ export function LghForm() {
                 </div>
               </div>
             )}
+          </div>
+
+          {/* BOOKING SOURCE SECTION */}
+          <div className="bg-white rounded-2xl p-5 border border-gray-100 shadow-sm space-y-3">
+            <h3 className="text-xs font-black text-indigo-900 uppercase tracking-widest flex items-center gap-1">
+              <Globe className="w-3.5 h-3.5 text-indigo-500" /> Booking Source
+            </h3>
+            <div>
+              <label className="flex justify-between items-center text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5 font-sans">
+                <span>Sumber Pemesanan <span className="text-red-500">*</span></span>
+                <button 
+                  type="button" 
+                  onClick={() => setShowManageBookingSourceModal(true)}
+                  className="text-[10px] text-indigo-500 hover:text-indigo-700 hover:underline capitalize"
+                >
+                  Kelola Daftar
+                </button>
+              </label>
+              <div className="relative">
+                <Globe className="absolute left-3.5 top-3 w-4 h-4 text-gray-400 pointer-events-none" />
+                <select
+                  value={bookingSource}
+                  onChange={(e) => {
+                    if (e.target.value === "ADD_NEW") {
+                      setShowAddBookingSourceModal(true);
+                    } else {
+                      setBookingSource(e.target.value);
+                    }
+                  }}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl pl-10 pr-4 py-2.5 text-xs font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 font-sans cursor-pointer"
+                >
+                  {bookingSources.map((src, idx) => (
+                    <option key={`bs-${idx}`} value={src}>{src}</option>
+                  ))}
+                  <option value="ADD_NEW">+ Lainnya (Tambah Baru)</option>
+                </select>
+              </div>
+            </div>
           </div>
 
           {/* FINANCIAL SECTION */}
@@ -1231,7 +1835,7 @@ export function LghForm() {
           {/* SIGN TAB */}
           <div className="bg-white rounded-2xl p-5 border border-gray-100 shadow-sm space-y-3.5">
             <h3 className="text-xs font-black text-indigo-900 uppercase tracking-widest flex items-center gap-1">
-              <FileText className="w-3.5 h-3.5 text-indigo-500" /> Tanda Tangan Tamu
+              <FileText className="w-3.5 h-3.5 text-indigo-500" /> Guest Signature
             </h3>
             
             <div className="border-2 border-dashed border-gray-200 rounded-xl p-2 bg-indigo-50/20 relative">
@@ -1295,6 +1899,10 @@ export function LghForm() {
                   alert('Masukkan atau pilih data tamu!');
                   return;
                 }
+                if (guestType === 'Extend' && !selectedExtendId && !namaTamu) {
+                  alert('Pilih atau lengkapi data tamu untuk extend!');
+                  return;
+                }
                 if (guestType === 'New Guest' && !namaTamu) {
                   alert('Mohon isi nama lengkap tamu di Data Tamu!');
                   return;
@@ -1304,7 +1912,7 @@ export function LghForm() {
               className="flex-1 flex items-center justify-center gap-1.5 border border-indigo-200 hover:border-indigo-300 bg-indigo-50 text-indigo-900 rounded-xl py-3.5 text-xs font-bold cursor-pointer transition-all hover:bg-indigo-100/50"
             >
               <FileText className="w-4 h-4 text-indigo-700" />
-              Surat Regis Tamu
+              Preview
             </button>
 
             <button
@@ -1327,7 +1935,6 @@ export function LghForm() {
           </div>
         </form>
       )}
-
       {/* CAMERA CAPTURE ASSISTANCE */}
       {cameraTarget && (
         <CameraModal
@@ -1351,11 +1958,9 @@ export function LghForm() {
           }}
         />
       )}
-
       {/* GUEST REGISTRATION MODAL WITH FORMAT GUEST REGISTRATION TO PRINT */}
-      {showRegModal && (
-        <div className="fixed inset-0 z-[200] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl relative flex flex-col max-h-[90vh]">
+      <div className={`fixed ${showRegModal ? 'inset-0 z-[200] bg-black/50 backdrop-blur-sm' : '-left-[9999px] -top-[9999px] opacity-0 pointer-events-none'} flex items-center justify-center p-4`}>
+        <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl relative flex flex-col max-h-[90vh]">
             
             {/* Header */}
             <div className="p-4 border-b border-gray-100 flex items-center justify-between">
@@ -1372,14 +1977,17 @@ export function LghForm() {
             </div>
 
             {/* Scrollable document layout print area */}
-            <div className="flex-1 overflow-y-auto p-6" id="printable-area">
-              <div className="max-w-md mx-auto bg-white border border-gray-200 p-6 rounded-lg text-left shadow-inner text-zinc-800 font-sans text-xs space-y-4">
+            <div className="flex-1 overflow-y-auto p-6" id="printable-area-wrapper">
+              <div id="printable-area" className="max-w-md mx-auto bg-white border border-gray-200 p-6 rounded-lg text-left shadow-inner text-zinc-800 font-sans text-xs space-y-4">
                 
                 {/* Title */}
-                <div className="text-center pb-2 border-b border-gray-100">
-                  <h2 className="text-base font-black tracking-tight text-gray-900 uppercase">GUEST REGISTRATION</h2>
-                  <p className="text-[10px] font-bold text-gray-500">No. {lghId}</p>
-                  <p className="text-[11px] font-extrabold text-indigo-900 mt-0.5">Lovissa Guesthouse - Bali</p>
+                <div className="flex items-center gap-3 pb-2 border-b border-gray-100">
+                  <img src="https://i.ibb.co.com/V0WH2wQN/lovissa.png" alt="Lovissa" className="w-12 h-12 object-contain" referrerPolicy="no-referrer" />
+                  <div className="text-left flex-1">
+                    <h2 className="text-base font-black tracking-tight text-gray-900 uppercase">GUEST REGISTRATION</h2>
+                    <p className="text-[10px] font-bold text-gray-500">No. {lghId}</p>
+                    <p className="text-[11px] font-extrabold text-indigo-900 mt-0.5">Lovissa Guesthouse - Bali</p>
+                  </div>
                 </div>
 
                 {/* Subtitle intro */}
@@ -1391,12 +1999,26 @@ export function LghForm() {
                 <div className="space-y-2 pt-1">
                   <h4 className="font-extrabold text-gray-900 border-b border-gray-100 pb-0.5 text-[10px] uppercase tracking-wider">GUEST DETAILS</h4>
                   <div className="grid grid-cols-2 gap-y-1.5 text-[11px]">
-                    <div><span className="text-gray-400 font-medium select-none">Full Name:</span> <p className="font-bold text-gray-950 inline">{activeGuestNameStr || '-'}</p></div>
-                    <div><span className="text-gray-400 font-medium select-none">ID / Passport Number:</span> <p className="font-mono font-bold text-gray-805 inline">{noId || 'Loaded Existing'}</p></div>
                     <div>
-                      <span className="text-gray-400 font-medium select-none">WhatsApp / Phone:</span> <p className="font-bold text-zinc-900 inline">{activeGuestPhoneStr || '-'}</p>
+                      <span className="text-gray-400 font-medium select-none block">Guest Type:</span> 
+                      <p className="font-bold text-indigo-900">{guestType}</p>
                     </div>
-                    <div><span className="text-gray-400 font-medium select-none">Email:</span> <p className="font-bold text-zinc-900 inline">{activeGuestEmailStr || '-'}</p></div>
+                    <div>
+                      <span className="text-gray-400 font-medium select-none block">Full Name:</span> 
+                      <p className="font-bold text-gray-950">{activeGuestNameStr || '-'}</p>
+                    </div>
+                    <div>
+                      <span className="text-gray-400 font-medium select-none block">ID / Passport Number:</span> 
+                      <p className="font-mono font-bold text-gray-800">{noId || (guestType === 'Repeater' ? 'Loaded Existing' : '-')}</p>
+                    </div>
+                    <div>
+                      <span className="text-gray-400 font-medium select-none block">WhatsApp / Phone:</span> 
+                      <p className="font-bold text-zinc-900">{activeGuestPhoneStr || '-'}</p>
+                    </div>
+                    <div className="overflow-hidden">
+                      <span className="text-gray-400 font-medium select-none block">Email:</span> 
+                      <p className="font-bold text-zinc-900 break-all pr-2">{activeGuestEmailStr || '-'}</p>
+                    </div>
                   </div>
                 </div>
 
@@ -1404,21 +2026,35 @@ export function LghForm() {
                 <div className="space-y-2">
                   <h4 className="font-extrabold text-gray-900 border-b border-gray-100 pb-0.5 text-[10px] uppercase tracking-wider">STAY PERIOD DETAILS</h4>
                   <div className="grid grid-cols-2 gap-y-1.5 text-[11px]">
-                    <div><span className="text-gray-400 font-medium select-none">Stay Period:</span> <p className="font-bold text-gray-950 inline">[{formattedCheckInStr}] to [{checkOutStr}]</p></div>
-                    <div><span className="text-gray-400 font-medium select-none">Stay Type:</span> <p className="font-bold text-indigo-900 inline">{type}</p></div>
-                    <div><span className="text-gray-400 font-medium select-none">Room Number:</span> <p className="font-bold text-indigo-600 inline">Room {selectedRoom || '-'}</p></div>
                     <div>
-                      <span className="text-gray-400 font-medium select-none">Duration:</span> <p className="font-bold text-gray-950 inline">{duration} {type === 'Daily' ? 'Days' : type === 'Weekly' ? 'Weeks' : 'Month'}</p>
+                      <span className="text-gray-400 font-medium select-none block">Stay Period:</span> 
+                      <p className="font-bold text-gray-950">[{formattedCheckInStr}] to [{checkOutStr}]</p>
+                    </div>
+                    <div>
+                      <span className="text-gray-400 font-medium select-none block">Stay Type:</span> 
+                      <p className="font-bold text-indigo-900">{type}</p>
+                    </div>
+                    <div>
+                      <span className="text-gray-400 font-medium select-none block">Room Number:</span> 
+                      <p className="font-bold text-indigo-600">Room {selectedRoom || '-'}</p>
+                    </div>
+                    <div>
+                      <span className="text-gray-400 font-medium select-none block">Duration:</span> 
+                      <p className="font-bold text-gray-950">{duration} {type === 'Daily' ? 'Days' : type === 'Weekly' ? 'Weeks' : 'Month'}</p>
+                    </div>
+                    <div>
+                      <span className="text-gray-400 font-medium select-none block">Booking Source:</span> 
+                      <p className="font-bold text-indigo-900">{bookingSource || '-'}</p>
                     </div>
                   </div>
                 </div>
 
                 {/* PAYMENT SECTION */}
                 <div className="bg-zinc-50 border border-zinc-100 p-2.5 rounded-xl">
-                  <p className="text-[11px] font-black text-emerald-900 flex justify-between">
+                  <div className="text-[11px] font-black text-emerald-900 flex flex-col gap-1 sm:flex-row sm:justify-between sm:items-center">
                     <span>PAYMENT BY {payment.toUpperCase()}:</span>
-                    <span>Rp {Number(price || 0).toLocaleString('id-ID')} X {duration} = Rp {calculatedAmount.toLocaleString('id-ID')}</span>
-                  </p>
+                    <span className="text-right whitespace-normal break-words">Rp {Number(price || 0).toLocaleString('id-ID')} X {duration} = Rp {calculatedAmount.toLocaleString('id-ID')}</span>
+                  </div>
                 </div>
 
                 {/* TERMS & CONDITIONS */}
@@ -1446,9 +2082,10 @@ export function LghForm() {
                 </div>
 
                 {/* SIGNATURE AREA DISPLAY */}
-                <div className="flex flex-col items-end pt-4">
+                <div className="flex justify-between items-end pt-4 w-full">
+                  <img src="https://i.ibb.co/whqcWsG8/qr-lovissa.png" alt="QR Lovissa" className="h-[90px] w-auto object-contain" referrerPolicy="no-referrer" />
                   <div className="w-[150px] text-center space-y-2">
-                    <p className="text-[10px] text-gray-400 select-none">Tanda Tangan Tamu,</p>
+                    <p className="text-[10px] text-gray-400 select-none">Guest Signature,</p>
                     
                     {/* Rendered signature image if drawn */}
                     {hasSignature && canvasRef.current ? (
@@ -1478,21 +2115,112 @@ export function LghForm() {
             <div className="p-4 bg-gray-50 rounded-b-2xl border-t border-gray-100 flex gap-2">
               <button
                 type="button"
-                onClick={handlePrint}
-                className="flex-1 flex items-center justify-center gap-1.5 bg-indigo-900 hover:bg-indigo-800 text-white rounded-xl py-3 text-xs font-bold cursor-pointer transition-all"
-              >
-                <Printer className="w-4 h-4" />
-                Cetak / Download PDF
-              </button>
-              <button
-                type="button"
                 onClick={() => setShowRegModal(false)}
-                className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-100 rounded-xl py-3 text-xs font-bold cursor-pointer transition-all bg-white"
+                disabled={submitting}
+                className="w-full border border-gray-200 text-gray-600 hover:bg-gray-100 rounded-xl py-3 text-xs font-bold cursor-pointer transition-all bg-white"
               >
                 Tutup
               </button>
             </div>
 
+          </div>
+        </div>
+
+      {/* MODAL: Add New Booking Source */}
+      {showAddBookingSourceModal && (
+        <div className="fixed inset-0 bg-black/60 z-[120] flex items-center justify-center px-4">
+          <div className="bg-white rounded-2xl w-full max-w-sm p-6 shadow-2xl relative">
+            <button
+              onClick={() => {
+                setShowAddBookingSourceModal(false);
+                setBookingSource(bookingSources[0] || "Booking.com");
+              }}
+              className="absolute top-4 right-4 p-2 bg-gray-100 hover:bg-gray-200 text-gray-500 rounded-full transition-colors cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+            <h3 className="text-lg font-black text-indigo-900 mb-4">
+              Tambah Sumber Booking
+            </h3>
+            <p className="text-xs text-gray-500 mb-4">
+              Masukkan nama sumber pemesanan yang baru (contoh: Traveloka, Agoda, dsb).
+            </p>
+            <input
+              type="text"
+              value={newBookingSourceName}
+              onChange={(e) => setNewBookingSourceName(e.target.value)}
+              placeholder="Nama sumber..."
+              className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-xs font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 mb-5"
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  setShowAddBookingSourceModal(false);
+                  setBookingSource(bookingSources[0] || "Booking.com");
+                }}
+                className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-100 rounded-xl py-3 text-xs font-bold cursor-pointer transition-all"
+              >
+                Batal
+              </button>
+              <button
+                onClick={handleAddBookingSource}
+                className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl py-3 text-xs font-bold shadow-md cursor-pointer transition-all"
+              >
+                Tambah
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Manage Booking Sources */}
+      {showManageBookingSourceModal && (
+        <div className="fixed inset-0 bg-black/60 z-[120] flex items-center justify-center px-4">
+          <div className="bg-white rounded-2xl w-full max-w-sm p-6 shadow-2xl relative text-left">
+            <button
+              onClick={() => setShowManageBookingSourceModal(false)}
+              className="absolute top-4 right-4 p-2 bg-gray-100 hover:bg-gray-200 text-gray-500 rounded-full transition-colors cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+            <h3 className="text-lg font-black text-indigo-900 mb-2">
+              Kelola Sumber Booking
+            </h3>
+            <p className="text-xs text-gray-500 mb-4">
+              Hapus sumber pemesanan khusus yang tidak lagi digunakan.
+            </p>
+            
+            <div className="max-h-64 overflow-y-auto space-y-2 mb-5 pr-1">
+              {bookingSources.map((src, idx) => {
+                const isDefault = DEFAULT_BOOKING_SOURCES.includes(src);
+                return (
+                  <div key={`manage-bs-${idx}`} className="flex items-center justify-between p-3 bg-gray-50 border border-gray-100 rounded-xl">
+                    <span className="text-sm font-bold text-gray-700">{src}</span>
+                    {!isDefault && (
+                      <button 
+                        onClick={() => handleDeleteBookingSource(src)}
+                        className="text-red-500 hover:text-red-700 p-1 bg-red-50 hover:bg-red-100 rounded-md transition-colors"
+                        title="Hapus sumber"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                    {isDefault && (
+                      <span className="text-[10px] font-bold text-gray-400 bg-gray-200 px-2 py-0.5 rounded-md uppercase">
+                        Bawaan
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <button
+              onClick={() => setShowManageBookingSourceModal(false)}
+              className="w-full bg-indigo-50 border border-indigo-100 text-indigo-700 hover:bg-indigo-100 rounded-xl py-3 text-xs font-bold cursor-pointer transition-all"
+            >
+              Tutup
+            </button>
           </div>
         </div>
       )}
